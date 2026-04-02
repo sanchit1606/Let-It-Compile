@@ -1,0 +1,305 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
+import gymnasium as gym
+import numpy as np
+
+from environment.action_space import (
+    KERNEL_NAMES,
+    decode_action,
+    make_action_space,
+)
+from environment.reward import speedup_reward
+from environment.state_space import (
+    ObservationSpec,
+    build_observation,
+    cupti_dict_to_vector,
+    make_observation_space,
+)
+from kernels.gemm import run_gemm
+from kernels.reduction import run_reduction
+from kernels.softmax import run_softmax
+from profiling.cuda_timer import time_kernel
+from profiling.cupti_collector import CUPTICollector, DEFAULT_NCU_METRICS, default_state_vector
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+@dataclass
+class EpisodeConfig:
+    """Configuration for a single episode.
+
+    kernel_name:
+      - One of: gemm, reduction, softmax
+      - Or "random" to sample a kernel at reset
+
+    matrix_size:
+      - For gemm/softmax: N means NxN
+      - For reduction: we reduce N*N elements (to match Phase 0/1 convention)
+    """
+
+    kernel_name: str = "gemm"
+    matrix_size: int = 512
+    max_steps: int = 20
+
+    # Timing
+    warmup: int = 1
+    repeats: int = 5
+
+    # Observation sources
+    use_cupti: bool = False
+    use_nvml: bool = True
+
+    # CUPTI timeouts (ncu subprocess)
+    cupti_timeout_s: int = 120
+
+
+class KernelOptimizationEnv(gym.Env):
+    """Gymnasium environment for kernel optimization.
+
+    Action:
+      - Select (block_size, reg_cap)
+
+    Observation (normalized [0,1], best-effort):
+      - CUPTI vector (Phase 1 metrics) OR zeros if unavailable
+      - NVML vector (util/mem/temp) OR zeros if unavailable
+      - Kernel one-hot
+      - Previous action (indices normalized)
+
+    Reward:
+      - speedup relative to per-episode baseline (default config)
+    """
+
+    metadata = {"render_modes": []}
+
+    def __init__(self, cfg: Optional[EpisodeConfig] = None, *, obs_spec: Optional[ObservationSpec] = None):
+        super().__init__()
+
+        self.cfg = cfg or EpisodeConfig()
+        self.obs_spec = obs_spec or ObservationSpec(include_nvml=self.cfg.use_nvml)
+
+        self.action_space = make_action_space()
+        self.observation_space = make_observation_space(self.obs_spec)
+
+        self._rng = np.random.default_rng()
+        self._step = 0
+        self._kernel_name = "gemm"
+
+        self._baseline_ms: float = 1.0
+        self._prev_action_norm = np.zeros(2, dtype=np.float32)
+
+        # Optional collectors (lazy init)
+        self._cupti: Optional[CUPTICollector] = None
+        self._nvml = None
+
+    def seed(self, seed: Optional[int] = None):
+        if seed is not None:
+            self._rng = np.random.default_rng(int(seed))
+
+    def _pick_kernel_name(self) -> str:
+        if self.cfg.kernel_name == "random":
+            return str(self._rng.choice(KERNEL_NAMES))
+        if self.cfg.kernel_name not in KERNEL_NAMES:
+            raise ValueError(f"Invalid kernel_name={self.cfg.kernel_name}. Use one of {KERNEL_NAMES} or 'random'.")
+        return self.cfg.kernel_name
+
+    def _ensure_collectors(self):
+        if self.cfg.use_cupti and self._cupti is None:
+            metrics = {
+                "achieved_occupancy": DEFAULT_NCU_METRICS["achieved_occupancy"],
+                "l2_hit_rate": DEFAULT_NCU_METRICS["l2_hit_rate"],
+                "dram_bw_pct": DEFAULT_NCU_METRICS["dram_bw_pct"],
+                "sm_active_pct": DEFAULT_NCU_METRICS["sm_active_pct"],
+            }
+            self._cupti = CUPTICollector(metrics=metrics)
+
+        if self.cfg.use_nvml and self._nvml is None:
+            try:
+                from profiling.nvml_monitor import NVMLMonitor
+
+                self._nvml = NVMLMonitor()
+            except Exception:
+                self._nvml = None
+
+    def _prepare_kernel(self, kernel_name: str, block_size: int, reg_cap: int):
+        n = int(self.cfg.matrix_size)
+
+        if kernel_name == "gemm":
+            A, B, C, grid, block, kernel_fn = run_gemm(n, block_size=block_size, warmup=self.cfg.warmup, reg_cap=reg_cap)
+            args = (A, B, C, np.int32(n))
+            return grid, block, kernel_fn, args
+
+        if kernel_name == "reduction":
+            total = int(n * n)
+            x, out, grid, block, kernel_fn = run_reduction(total, block_size=block_size, warmup=self.cfg.warmup, reg_cap=reg_cap)
+            args = (x, out, np.int32(total))
+            return grid, block, kernel_fn, args
+
+        if kernel_name == "softmax":
+            x, out, grid, block, kernel_fn = run_softmax(n, block_size=block_size, warmup=self.cfg.warmup, reg_cap=reg_cap)
+            args = (x, out, np.int32(n), np.int32(n))
+            return grid, block, kernel_fn, args
+
+        raise ValueError(f"Unknown kernel: {kernel_name}")
+
+    def _measure_time_ms(self, kernel_name: str, block_size: int, reg_cap: int) -> float:
+        grid, block, kernel_fn, args = self._prepare_kernel(kernel_name, block_size, reg_cap)
+        timing = time_kernel(kernel_fn, grid, block, args, warmup=0, repeats=self.cfg.repeats)
+        return float(timing.mean_ms)
+
+    def _collect_cupti_norm(self, kernel_name: str, block_size: int, reg_cap: int) -> Tuple[np.ndarray, str, bool]:
+        keys = tuple(self.obs_spec.cupti_keys)
+
+        if not self.cfg.use_cupti:
+            return default_state_vector(order=keys), "disabled", False
+
+        self._ensure_collectors()
+        if self._cupti is None:
+            return default_state_vector(order=keys), "collector_unavailable", False
+
+        # Runner code executed under ncu in a temp directory.
+        # We inject the repo root so imports work regardless of cwd.
+        repo_root = str(_REPO_ROOT)
+        n = int(self.cfg.matrix_size)
+
+        code = f"""
+import sys
+sys.path.insert(0, r"{repo_root}")
+
+import numpy as np
+from numba import cuda
+
+from kernels.gemm import run_gemm
+from kernels.reduction import run_reduction
+from kernels.softmax import run_softmax
+
+kernel = {kernel_name!r}
+n = {n}
+block_size = {int(block_size)}
+reg_cap = {int(reg_cap)}
+
+if kernel == 'gemm':
+    A, B, C, grid, block, kernel_fn = run_gemm(n, block_size=block_size, warmup=1, reg_cap=reg_cap)
+    args = (A, B, C, np.int32(n))
+elif kernel == 'reduction':
+    total = n * n
+    x, out, grid, block, kernel_fn = run_reduction(total, block_size=block_size, warmup=1, reg_cap=reg_cap)
+    args = (x, out, np.int32(total))
+elif kernel == 'softmax':
+    x, out, grid, block, kernel_fn = run_softmax(n, block_size=block_size, warmup=1, reg_cap=reg_cap)
+    args = (x, out, np.int32(n), np.int32(n))
+else:
+    raise ValueError(kernel)
+
+# One representative measured launch (warmup already happened inside run_*).
+kernel_fn[grid, block](*args)
+cuda.default_stream().synchronize()
+""".lstrip()
+
+        res = self._cupti.collect_from_python_code(code, timeout_s=self.cfg.cupti_timeout_s)
+        if not res.ok:
+            return default_state_vector(order=keys), res.reason, False
+
+        vec = cupti_dict_to_vector(res.normalized, keys)
+        return vec, "ok", True
+
+    def _collect_nvml_norm(self) -> np.ndarray:
+        if not self.obs_spec.include_nvml:
+            return np.zeros(4, dtype=np.float32)
+
+        self._ensure_collectors()
+        if self._nvml is None:
+            return np.zeros(4, dtype=np.float32)
+
+        try:
+            return self._nvml.to_vector().astype(np.float32)
+        except Exception:
+            return np.zeros(4, dtype=np.float32)
+
+    def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
+        super().reset(seed=seed)
+        if seed is not None:
+            self.seed(seed)
+
+        self._step = 0
+        self._kernel_name = self._pick_kernel_name()
+
+        # Baseline: default reg cap, standard block size.
+        self._baseline_ms = self._measure_time_ms(self._kernel_name, block_size=256, reg_cap=0)
+
+        self._prev_action_norm = np.zeros(2, dtype=np.float32)
+
+        cupti_vec, cupti_reason, cupti_ok = self._collect_cupti_norm(self._kernel_name, block_size=256, reg_cap=0)
+        nvml_vec = self._collect_nvml_norm() if self.obs_spec.include_nvml else None
+
+        obs = build_observation(
+            kernel_name=self._kernel_name,
+            cupti_norm=cupti_vec,
+            nvml_norm=nvml_vec,
+            prev_action_norm=self._prev_action_norm,
+            spec=self.obs_spec,
+        )
+
+        info = {
+            "kernel": self._kernel_name,
+            "matrix_size": int(self.cfg.matrix_size),
+            "baseline_ms": float(self._baseline_ms),
+            "cupti_ok": bool(cupti_ok),
+            "cupti_reason": str(cupti_reason),
+            "cupti_keys": tuple(self.obs_spec.cupti_keys),
+            "cupti_vec": [float(x) for x in np.asarray(cupti_vec, dtype=np.float32).tolist()],
+            "nvml_vec": None if nvml_vec is None else [float(x) for x in np.asarray(nvml_vec, dtype=np.float32).tolist()],
+        }
+
+        return obs, info
+
+    def step(self, action):
+        self._step += 1
+
+        a = decode_action(action)
+
+        # Normalize previous action indices into [0,1]
+        block_idx = int(action[0])
+        reg_idx = int(action[1])
+        self._prev_action_norm = np.array([
+            block_idx / max(1, (self.action_space.nvec[0] - 1)),
+            reg_idx / max(1, (self.action_space.nvec[1] - 1)),
+        ], dtype=np.float32)
+
+        measured_ms = self._measure_time_ms(self._kernel_name, block_size=a.block_size, reg_cap=a.reg_cap)
+        rr = speedup_reward(baseline_ms=self._baseline_ms, measured_ms=measured_ms)
+
+        cupti_vec, cupti_reason, cupti_ok = self._collect_cupti_norm(self._kernel_name, block_size=a.block_size, reg_cap=a.reg_cap)
+        nvml_vec = self._collect_nvml_norm() if self.obs_spec.include_nvml else None
+
+        obs = build_observation(
+            kernel_name=self._kernel_name,
+            cupti_norm=cupti_vec,
+            nvml_norm=nvml_vec,
+            prev_action_norm=self._prev_action_norm,
+            spec=self.obs_spec,
+        )
+
+        terminated = False
+        truncated = self._step >= int(self.cfg.max_steps)
+
+        info: Dict[str, Any] = {
+            "kernel": self._kernel_name,
+            "matrix_size": int(self.cfg.matrix_size),
+            "block_size": int(a.block_size),
+            "reg_cap": int(a.reg_cap),
+            "time_ms": float(measured_ms),
+            "baseline_ms": float(self._baseline_ms),
+            "speedup": float(rr.speedup),
+            "cupti_ok": bool(cupti_ok),
+            "cupti_reason": str(cupti_reason),
+            "cupti_keys": tuple(self.obs_spec.cupti_keys),
+            "cupti_vec": [float(x) for x in np.asarray(cupti_vec, dtype=np.float32).tolist()],
+            "nvml_vec": None if nvml_vec is None else [float(x) for x in np.asarray(nvml_vec, dtype=np.float32).tolist()],
+        }
+
+        return obs, float(rr.reward), terminated, truncated, info

@@ -10,6 +10,16 @@ Tests:
 import pytest
 
 
+def _skip_if_no_cuda():
+    try:
+        from numba import cuda
+
+        if not cuda.is_available():
+            pytest.skip("CUDA not available")
+    except Exception:
+        pytest.skip("Numba CUDA not available")
+
+
 def test_gymnasium_import():
     """Test that Gymnasium is available."""
     try:
@@ -46,6 +56,43 @@ def test_episode_config_creation():
         assert config.max_steps == 10
     except ImportError:
         pytest.skip("EpisodeConfig not available")
+
+
+def test_env_reset_step_smoke():
+    """Phase 3 smoke test: env reset + one step.
+
+    This is skip-safe:
+    - skips if CUDA isn't available
+    - does NOT require ncu (CUPTI) or NVML
+    """
+
+    _skip_if_no_cuda()
+
+    from environment.kernel_env import KernelOptimizationEnv, EpisodeConfig
+
+    cfg = EpisodeConfig(
+        kernel_name="gemm",
+        matrix_size=64,
+        max_steps=2,
+        warmup=1,
+        repeats=2,
+        use_cupti=False,
+        use_nvml=False,
+    )
+    env = KernelOptimizationEnv(cfg)
+    obs, info = env.reset(seed=0)
+
+    assert env.observation_space.contains(obs)
+    assert "baseline_ms" in info
+
+    action = env.action_space.sample()
+    obs2, reward, terminated, truncated, info2 = env.step(action)
+
+    assert env.observation_space.contains(obs2)
+    assert isinstance(reward, float)
+    assert terminated is False
+    assert isinstance(truncated, bool)
+    assert "time_ms" in info2
 
 
 if __name__ == "__main__":

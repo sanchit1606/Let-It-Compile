@@ -611,10 +611,6 @@ tests/test_kernels.py::test_softmax_sums_to_one_large PASSED
 
 Interpretation:
 - **`3 passed`** means the kernels behave correctly on benchmark-like sizes.
-- At this point, you can safely:
-   - rerun Phase 0 baseline sweeps,
-   - rerun Phase 1 counter collection,
-   - or proceed to Phase 3 (RL environment).
 
 #### Common gotchas / how to interpret warnings
 
@@ -629,6 +625,23 @@ If Phase 2 tests fail:
 ---
 
 ## Future phases (Phase 3+)
+### Phase 3 — RL Environment (Gym interface)
+
+Phase 3’s job is to take the kernels (Phase 2), timing (Phase 0), and optional counters (Phase 1) and wrap them in a **Gymnasium environment**.
+
+Objectives:
+- **Action → knob mapping**: each action corresponds to a concrete configuration (initially `block_size` and `reg_cap`).
+- **Reward = speedup**: reward is based on measured speedup relative to a baseline configuration that is measured once per episode.
+- **Observation is bounded and ML-friendly**: observation vectors are numeric and normalized/clamped to $[0,1]$.
+- **Graceful degradation on Windows**: if CUPTI/`ncu` metrics are unavailable (e.g., `ERR_NVGPUCTRPERM`), the environment still runs using fallback vectors instead of failing.
+- **Repeatability**: episodes are deterministic for a given kernel + matrix size + seed, aside from expected GPU timing noise.
+
+Non-objectives (initial Phase 3 prototype):
+- Profiling every step by default (profiling is opt-in because it is slow and may require Administrator on Windows).
+- Expanding the action space beyond the two core knobs before the baseline loop is stable.
+
+---
+
 Add later phases here using the same structure:
 - goal
 - how to run

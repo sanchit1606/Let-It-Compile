@@ -1189,6 +1189,31 @@ class PTXASController:
 
 ## 6. Phase 3 — RL Environment
 
+### 6.0 Objectives
+
+Phase 3 turns Phase 0/1/2 into an RL-ready loop.
+
+Primary objectives:
+- **Expose compiler/runtime knobs as actions**: map an action to a concrete kernel configuration (initially `block_size` and `reg_cap`).
+- **Define a stable reward**: reward is speedup relative to a per-episode baseline configuration (baseline measured at `reset()`).
+- **Produce bounded observations**: build an observation vector suitable for learning:
+    - kernel identity (one-hot)
+    - previous action (normalized indices)
+    - optional CUPTI/`ncu` metrics (Phase 1) normalized to $[0,1]$ when available
+    - optional NVML telemetry (lightweight, works without counter permissions)
+- **Be robust on Windows**:
+    - Phase 3 must still function if GPU counters are blocked (`ERR_NVGPUCTRPERM`) by falling back to zeros/default vectors.
+    - keep CUPTI collection opt-in because it is slow and often requires an elevated terminal.
+
+Non-objectives (for the initial Phase 3 prototype):
+- Learning a shared-memory / unroll-factor action space before the baseline `(block_size, reg_cap)` loop is stable.
+- Maximizing training throughput (profiling-enabled training will be slow; focus on correctness first).
+
+Definition of Done:
+- A `gymnasium.Env` implementation exists with correct `reset()` / `step()` semantics.
+- `reset()` measures a baseline time, and `step()` returns `(obs, reward, terminated, truncated, info)` with reward correlated to measured speedup.
+- A smoke test can run locally without requiring CUPTI permissions.
+
 ### 6.1 `environment/kernel_env.py`
 
 ```python
