@@ -1,6 +1,19 @@
-# GPU JIT Optimization — Adaptive ML-Driven CUDA Compilation
+<div align="center">
 
-**Research Goal:** Demonstrate that an RL agent conditioned on CUPTI hardware counter signals can adaptively select CUDA compilation parameters (`--maxrregcount`, block size, shared memory allocation), outperforming PTXAS static defaults on NVIDIA RTX 3050 Ti.
+# Let It Compile
+
+## An RL Approach to Adaptive Register Allocation for GPU Kernel Optimization Across the Stack
+
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)](https://www.python.org/)
+[![Numba](https://img.shields.io/badge/Numba-CUDA-success?logo=nvidia)](https://numba.pydata.org/)
+[![CUDA](https://img.shields.io/badge/CUDA-12.x-76B900?logo=nvidia)](https://developer.nvidia.com/cuda-toolkit)
+[![Gymnasium](https://img.shields.io/badge/Gymnasium-RL-orange)](https://gymnasium.farama.org/)
+
+**Research Goal:** Demonstrate that an RL agent conditioned on CUPTI hardware counter signals can adaptively select GPU compilation + launch parameters (register cap / `--maxrregcount`, block size, shared memory allocation), outperforming PTXAS static defaults on NVIDIA RTX 3050 Ti.
+
+</div>
+
+---
 
 ## Overview
 
@@ -217,5 +230,5 @@ For questions or issues, refer to `implementation-plan.md` or check the troubles
 
 ---
 
-**Last Updated:** April 1, 2026  
-**Status:** Ready for Phase 0
+**Last Updated:** April 2, 2026  
+**Status:** Phase 0 complete; ready for Phase 1+
