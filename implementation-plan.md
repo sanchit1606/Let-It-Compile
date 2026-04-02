@@ -499,6 +499,33 @@ if __name__ == "__main__":
 
 ## 4. Phase 1 — CUPTI Instrumentation Layer
 
+### Phase 1 goals (what we must achieve)
+
+Phase 1 exists to make GPU execution **measurable** and **RL-ready**.
+
+Goals:
+- Collect a small, stable set of GPU performance counters per kernel run (CUPTI-derived) using a **reliable Windows-friendly path**.
+- Provide a single Python API that returns a **numeric state vector** (raw + normalized), suitable for an RL environment.
+- Detect and handle common failure modes gracefully (especially Windows WDDM counter permission errors like `ERR_NVGPUCTRPERM`).
+
+Definition of Done (Phase 1 is complete when):
+- We can run a smoke test that confirms counters are accessible (or returns a clear reason + fix instructions).
+- We can collect at least these metrics for a single kernel launch via Nsight Compute (`ncu`) when available:
+    - achieved occupancy
+    - DRAM throughput (% of peak)
+    - L2 hit-rate
+    - SM active (% of peak)
+    - (optional) warp execution efficiency
+- The collector API:
+    - works on Windows without requiring manual shell quoting hacks,
+    - returns `None` / skips cleanly if `ncu` is missing or counters are blocked,
+    - never crashes the whole experiment suite if profiling is unavailable.
+
+Primary deliverables:
+- `profiling/ncu_utils.py`: smoke test + permission diagnostics
+- `profiling/cupti_collector.py`: metric collection wrapper around `ncu --csv`
+- Unit smoke test in `tests/` that imports the collector and (optionally) runs the smoke test
+
 ### 4.1 `profiling/cuda_timer.py`
 
 ```python

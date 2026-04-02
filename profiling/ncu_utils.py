@@ -185,3 +185,15 @@ cuda.default_stream().synchronize()
         stderr=stderr,
         ncu_path=ncu_path,
     )
+
+
+def resolve_ncu_path() -> Optional[str]:
+    """Public helper: resolve Nsight Compute CLI (`ncu`) on PATH."""
+
+    return _resolve_executable("ncu")
+
+
+def run_ncu_command(ncu_path: str, args: list[str], timeout_s: int = 60) -> subprocess.CompletedProcess:
+    """Public helper: run `ncu` robustly (handles Windows .cmd/.bat shims)."""
+
+    return _run_ncu_command(ncu_path, args=args, timeout_s=timeout_s)
