@@ -21,7 +21,11 @@ def pytest_collection_modifyitems(config, items):
     if config.getoption("--runslow"):
         return
 
-    skip_slow = pytest.mark.skip(reason="need --runslow option to run")
-    for item in items:
-        if "slow" in item.keywords:
-            item.add_marker(skip_slow)
+    slow_items = [item for item in items if "slow" in item.keywords]
+    if not slow_items:
+        return
+
+    for item in slow_items:
+        items.remove(item)
+
+    config.hook.pytest_deselected(items=slow_items)

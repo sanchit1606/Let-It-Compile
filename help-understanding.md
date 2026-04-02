@@ -2,7 +2,7 @@
 
 This doc explains how to interpret the experimental output in this project.
 
-As of now, **Phase 0** and **Phase 1** are implemented and produce results.
+As of now, **Phase 0** and **Phase 1** are implemented and produce results, and **Phase 2** validation (kernel correctness tests) is implemented.
 
 ## Objectives
 
@@ -14,6 +14,7 @@ Project objectives (what the experiments are trying to prove):
 This document’s objectives (what you should be able to do after reading):
 - Understand what each phase measures and why it exists.
 - Run Phase 0/1 and know where their CSV outputs are saved.
+- Run Phase 2 tests (small suite vs performance-scale suite) and interpret the results.
 - Interpret the most important CSV columns and common failure modes (especially on Windows).
 
 ---
@@ -554,21 +555,76 @@ Floating point note:
 - We use **tolerances** (“close enough”) rather than exact equality.
 
 ### How to validate Phase 2 (recommended before Phase 3/RL)
-Run the kernel unit tests:
+
+Phase 2 uses a **two-tier** testing approach:
+
+1) **Small correctness suite (default)**
+- Runs quickly (seconds)
+- Uses small + edge-case sizes to catch indexing/boundary bugs
+- This is the test suite you run frequently while developing
+
+2) **Performance-scale validation suite (opt-in)**
+- Runs medium/large sizes that are closer to Phase 0/1 benchmark regimes
+- This is what you run before re-collecting Phase 0/1 tables, or before starting RL (Phase 3)
+
+#### 1) Small correctness suite (default)
+
+Command (from project root):
 
 ```bat
-pytest -q tests\test_kernels.py -vv
+cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stack" && conda activate gpu-jit-opt && pytest -q tests\test_kernels.py -vv
 ```
 
-What these tests do:
-- Skip safely if CUDA is not available in the current Python environment
-- Verify the kernel modules import correctly
-- Run small problem sizes and check numerical correctness
-- Run both `reg_cap=default` and a capped variant (e.g. `reg_cap=32`) to ensure the “register cap” path is stable
+Expected terminal output (shape):
+
+```text
+collected 19 items / 3 deselected / 16 selected
+
+... 16 PASSED lines ...
+
+16 passed, 3 deselected, ... warnings in X.XXs
+```
+
+Interpretation:
+- **`16 passed`** means the kernels are correct on small/edge-case sizes.
+- **`3 deselected`** means the performance-scale tests exist but were not run (by design).
+
+#### 2) Performance-scale validation suite (medium/large)
+
+Command (opt-in):
+
+```bat
+cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stack" && conda activate gpu-jit-opt && pytest -q tests\test_kernels.py -vv --runslow -m slow
+```
+
+Expected terminal output (shape):
+
+```text
+collected 19 items / 16 deselected / 3 selected
+
+tests/test_kernels.py::test_gemm_correctness_large PASSED
+tests/test_kernels.py::test_reduction_correctness_large PASSED
+tests/test_kernels.py::test_softmax_sums_to_one_large PASSED
+
+3 passed, 16 deselected in X.XXs
+```
+
+Interpretation:
+- **`3 passed`** means the kernels behave correctly on benchmark-like sizes.
+- At this point, you can safely:
+   - rerun Phase 0 baseline sweeps,
+   - rerun Phase 1 counter collection,
+   - or proceed to Phase 3 (RL environment).
+
+#### Common gotchas / how to interpret warnings
+
+- `NumbaPerformanceWarning: Grid size ... under-utilization` is expected in the **small** suite.
+   - It means the input is tiny (few blocks), so the GPU is not fully utilized.
+   - This is fine for correctness tests.
 
 If Phase 2 tests fail:
-- Fix correctness first (don’t start RL yet)
-- Then rerun Phase 0/1 experiments, because they depend on these kernels being valid
+- Fix correctness first (don’t start RL yet).
+- Then rerun Phase 0/1 experiments, because they assume these kernels are valid.
 
 ---
 
