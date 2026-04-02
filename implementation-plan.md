@@ -526,11 +526,46 @@ Primary deliverables:
 - `profiling/cupti_collector.py`: metric collection wrapper around `ncu --csv`
 - Unit smoke test in `tests/` that imports the collector and (optionally) runs the smoke test
 
+### Phase 1 objectives (what you are building)
+
+By the end of Phase 1, you should have a **repeatable instrumentation pipeline** that later phases can rely on.
+
+Objectives:
+- Establish a reliable way to answer: "Can I read Nsight Compute / CUPTI counters on this machine right now?"
+- Provide a collector that turns one kernel run into a small metrics dictionary (and a normalized form for RL state).
+- Make it robust on Windows:
+    - handle `ncu` being a `.BAT/.CMD` shim
+    - handle `ERR_NVGPUCTRPERM` with actionable guidance
+    - avoid fragile quoting by using Python scripts/subprocess calls
+
+### What to expect in results (how you know Phase 1 works)
+
+When Phase 1 is working correctly, you should see:
+
+- Smoke test output:
+    - The smoke test prints: `True ok`
+
+- Collector output (programmatic):
+    - `CUPTICollector().preflight().ok == True`
+    - A successful collection returns a `CuptiCollectResult` with:
+        - `ok == True`
+        - `raw` containing numeric values for requested keys (e.g. `achieved_occupancy`)
+        - `normalized` containing the same keys mapped to approximately $[0, 1]$
+
+- Test output:
+    - In an Administrator CMD (with counters enabled), this should PASS:
+        - `pytest -q tests/test_cupti.py -k cupti -vv`
+        - Specifically: `test_cupti_collect_optional PASSED`
+
+- Integration expectation (Phase 0 + Phase 1 together):
+    - If you run Phase 0 with `PHASE0_COLLECT_NCU=1`, the Phase 0 CSV gains an `achieved_occ` column (fraction in $[0,1]$).
+    - If profiling is unavailable, Phase 0 still runs and simply skips `achieved_occ`.
+
 ### Phase 1 quick test (Windows, run as Administrator)
 
 On Windows, Nsight Compute / CUPTI performance counters often require an **elevated** terminal.
 
-1) Open **Command Prompt**  **Run as administrator**
+1) Open **Command Prompt** -> **Run as administrator**
 
 2) Run the Phase 1 smoke test (checks `ncu` + counter permissions):
 
