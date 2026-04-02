@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpu-jit-opt"
+version = "0.1.0"
+description = "Adaptive ML-driven GPU compilation optimization using RL agent"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "Your Name", email = "your.email@example.com" }
+]
+keywords = ["gpu", "cuda", "jit", "compilation", "reinforcement-learning", "optimization"]
+
+dependencies = [
+    "torch>=2.1.2",
+    "numba>=0.57.0",
+    "gymnasium>=0.29.1",
+    "stable-baselines3>=2.3.2",
+    "numpy>=1.23.0",
+    "pandas>=1.5.0",
+    "pytorch-geometric>=2.4.0",
+    "rich>=13.0.0",
+    "tqdm>=4.66.0",
+    "tensorboard>=2.15.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "black>=22.0",
+    "isort>=5.10",
+    "mypy>=0.990",
+]
+docs = [
+    "sphinx>=5.0",
+    "sphinx-rtd-theme>=1.0",
+]
+all = [
+    "gpu-jit-opt[dev,docs]"
+]
+
+[tool.black]
+line-length = 88
+target-version = ['py310']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 88
+multi_line_mode = 3
+include_trailing_comma = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "-v --tb=short"
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_return_any = true
+warn_unused_configs = true
