@@ -526,6 +526,29 @@ Primary deliverables:
 - `profiling/cupti_collector.py`: metric collection wrapper around `ncu --csv`
 - Unit smoke test in `tests/` that imports the collector and (optionally) runs the smoke test
 
+### Phase 1 quick test (Windows, run as Administrator)
+
+On Windows, Nsight Compute / CUPTI performance counters often require an **elevated** terminal.
+
+1) Open **Command Prompt**  **Run as administrator**
+
+2) Run the Phase 1 smoke test (checks `ncu` + counter permissions):
+
+```bat
+cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stack" && conda activate gpu-jit-opt && python -c "from profiling.ncu_utils import ncu_metric_smoke_test; r=ncu_metric_smoke_test(timeout_s=90); print(r.ok, r.reason)"
+```
+
+Expected output:
+- `True ok`
+
+If you see `ERR_NVGPUCTRPERM`, your GPU counter access is still blocked.
+
+3) Optional: run the Phase 1 pytest checks (collection test will skip if counters are blocked):
+
+```bat
+cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stack" && conda activate gpu-jit-opt && pytest -q tests/test_cupti.py -k cupti -vv
+```
+
 ### 4.1 `profiling/cuda_timer.py`
 
 ```python

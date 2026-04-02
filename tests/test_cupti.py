@@ -93,7 +93,9 @@ cuda.default_stream().synchronize()
 
     res = collector.collect_from_python_code(code, timeout_s=90)
     if not res.ok:
-        pytest.skip(f"ncu collect failed: {res.reason}")
+        stderr_head = (res.stderr or "")[:300].replace("\n", " ")
+        stdout_head = (res.stdout or "")[:300].replace("\n", " ")
+        pytest.skip(f"ncu collect failed: {res.reason} | stderr: {stderr_head} | stdout: {stdout_head}")
 
     assert "achieved_occupancy" in res.raw
     assert 0.0 <= res.normalized["achieved_occupancy"] <= 1.0

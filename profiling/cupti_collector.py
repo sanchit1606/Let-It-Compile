@@ -85,11 +85,22 @@ def _parse_ncu_csv(stdout: str) -> Dict[str, float]:
     if not stdout:
         return {}
 
-    start_idx = stdout.find("Metric Name")
-    if start_idx == -1:
+    # ncu prints a CSV table whose header line contains a "Metric Name" column.
+    # Important: the header line often starts with many other columns ("ID",
+    # "Process ID", ...). We must start parsing from the *beginning of the
+    # header line*, not from the middle of the line where the substring occurs.
+    metric_idx = stdout.find("Metric Name")
+    if metric_idx == -1:
         return {}
 
-    csv_text = stdout[start_idx:]
+    # Find the beginning of the line that contains the header.
+    line_start = stdout.rfind("\n", 0, metric_idx)
+    if line_start == -1:
+        line_start = 0
+    else:
+        line_start += 1
+
+    csv_text = stdout[line_start:]
     out: Dict[str, float] = {}
 
     reader = csv.DictReader(io.StringIO(csv_text))
@@ -98,7 +109,13 @@ def _parse_ncu_csv(stdout: str) -> Dict[str, float]:
         if not name:
             continue
 
-        raw_val = (row.get("Metric Value") or row.get("MetricValue") or row.get("Value") or "").strip()
+        raw_val = (
+            row.get("Metric Value")
+            or row.get("Metric Val")
+            or row.get("MetricValue")
+            or row.get("Value")
+            or ""
+        ).strip()
         if not raw_val:
             continue
 
@@ -171,7 +188,8 @@ class CUPTICollector:
             "--metrics",
             _metrics_arg(metric_list),
             "--csv",
-            "--quiet",
+            "--target-processes",
+            "all",
             py_exe,
             str(script_path),
         ]
@@ -209,7 +227,7 @@ class CUPTICollector:
             # Common on Windows if not admin.
             return CuptiCollectResult(ok=False, reason="permission_denied", raw={}, normalized={}, stdout=stdout, stderr=stderr)
 
-        parsed = _parse_ncu_csv(stdout)
+        parsed = _parse_ncu_csv(combined)
 
         raw_out: Dict[str, float] = {}
         norm_out: Dict[str, float] = {}
@@ -221,8 +239,19 @@ class CUPTICollector:
             norm_out[key] = _normalize_metric_value(key, v)
 
         ok = bool(raw_out)
-        reason = "ok" if ok else (f"ncu_failed_rc_{res.returncode}" if res.returncode else "no_metrics_parsed")
-        return CuptiCollectResult(ok=ok, reason=reason, raw=raw_out, normalized=norm_out, stdout=stdout, stderr=stderr)
+        if ok:
+            reason = "ok"
+        else:
+            reason = f"ncu_failed_rc_{res.returncode}" if res.returncode else "no_metrics_parsed"
+
+        return CuptiCollectResult(
+            ok=ok,
+            reason=reason,
+            raw=raw_out,
+            normalized=norm_out,
+            stdout=stdout,
+            stderr=stderr,
+        )
 
     def collect_from_python_code(
         self,
