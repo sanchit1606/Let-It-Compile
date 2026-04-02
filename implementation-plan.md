@@ -518,12 +518,14 @@ Definition of Done (Phase 1 is complete when):
     - (optional) warp execution efficiency
 - The collector API:
     - works on Windows without requiring manual shell quoting hacks,
-    - returns `None` / skips cleanly if `ncu` is missing or counters are blocked,
+    - returns a `CuptiCollectResult(ok=False, reason=...)` cleanly if `ncu` is missing or counters are blocked,
     - never crashes the whole experiment suite if profiling is unavailable.
 
 Primary deliverables:
 - `profiling/ncu_utils.py`: smoke test + permission diagnostics
 - `profiling/cupti_collector.py`: metric collection wrapper around `ncu --csv`
+- `experiments/phase1_collect_counters.py`: collect counters on real kernels and write `results/tables/phase1_result.csv`
+- `scripts/phase1_show_counters.py`: convenience wrapper to run the Phase 1 real-kernel collection
 - Unit smoke test in `tests/` that imports the collector and (optionally) runs the smoke test
 
 ### Phase 1 objectives (what you are building)
@@ -557,9 +559,15 @@ When Phase 1 is working correctly, you should see:
         - `pytest -q tests/test_cupti.py -k cupti -vv`
         - Specifically: `test_cupti_collect_optional PASSED`
 
+- Real-kernel CSV output:
+    - In an Administrator CMD (with counters enabled), running `python experiments\phase1_collect_counters.py` produces:
+        - `results/tables/phase1_result.csv`
+    - Each row includes `{metric}_raw` and `{metric}_norm` columns for the requested metrics.
+
 - Integration expectation (Phase 0 + Phase 1 together):
     - If you run Phase 0 with `PHASE0_COLLECT_NCU=1`, the Phase 0 CSV gains an `achieved_occ` column (fraction in $[0,1]$).
     - If profiling is unavailable, Phase 0 still runs and simply skips `achieved_occ`.
+    - If you run the Phase 1 real-kernel collector, it writes `results/tables/phase1_result.csv` with one row per configuration and `{metric}_raw` / `{metric}_norm` columns.
 
 ### Phase 1 quick test (Windows, run as Administrator)
 
@@ -583,6 +591,16 @@ If you see `ERR_NVGPUCTRPERM`, your GPU counter access is still blocked.
 ```bat
 cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stack" && conda activate gpu-jit-opt && pytest -q tests/test_cupti.py -k cupti -vv
 ```
+
+4) Run the Phase 1 real-kernel collection (writes `results/tables/phase1_result.csv`):
+
+```bat
+cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stack" && conda activate gpu-jit-opt && python experiments\phase1_collect_counters.py
+```
+
+Expected output:
+- Console prints progress per config and ends with a summary like `Done. Rows: ... (ok=...)`.
+- CSV written to `results/tables/phase1_result.csv`.
 
 ### 4.1 `profiling/cuda_timer.py`
 
@@ -667,158 +685,67 @@ def time_kernel(kernel_fn, grid, block, args: tuple, warmup: int = 3, repeats: i
 
 ### 4.2 `profiling/cupti_collector.py`
 
+The implemented Phase 1 collector uses **Nsight Compute CLI** (`ncu`) as a subprocess (Windows-friendly), and provides:
+
+- `DEFAULT_NCU_METRICS`: small stable metric name map (short key → ncu metric string)
+- `CuptiCollectResult`: `ok`, `reason`, `raw`, `normalized`, plus captured `stdout`/`stderr`
+- `CUPTICollector(metrics=...)`:
+    - `preflight()` to detect `ncu` availability + counter permissions (classifies `ERR_NVGPUCTRPERM`)
+    - `collect_from_python_file(...)` / `collect_from_python_code(...)` to run under `ncu --csv` and parse metrics
+- `default_state_vector(...)` to provide a safe fallback when profiling is unavailable
+
+Minimal usage (matches the repo implementation):
+
 ```python
-"""
-CUPTI hardware counter collection via Nsight Compute CLI (ncu).
+from profiling.cupti_collector import CUPTICollector, DEFAULT_NCU_METRICS
 
-Strategy: Use ncu as a subprocess to collect hardware counters.
-This is the most reliable approach for RTX 3050 Ti without
-requiring raw CUPTI API calls (which require root and kernel modules).
-
-The collected counters form the state vector for the RL agent:
-    x_t = [occupancy, l2_hit_rate, dram_bw_pct, warp_eff, sm_active_pct]
-
-These are the GPU-side equivalents of the CPU PMU vector from the JIT paper.
-"""
-
-import subprocess
-import csv
-import io
-import json
-from pathlib import Path
-from typing import Dict, Optional
-import numpy as np
-
-
-# ── Verified counter names for sm_86 (Ampere, RTX 3050 Ti) ──────────
-# Source: Nsight Compute Kernel Profiling Guide for Ampere
-# https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html
-CUPTI_COUNTERS = {
-    # Occupancy — most important for register allocation decisions
-    "achieved_occupancy":    "sm__warps_active.avg.pct_of_peak_sustained_active",
-    "theoretical_occupancy": "sm__maximum_warps_per_active_cycle_pct",
-
-    # Memory hierarchy
-    "l2_hit_rate":           "lts__t_sector_hit_rate.pct",
-    "l1_hit_rate":           "l1tex__t_sector_hit_rate.pct",
-    "dram_bw_pct":           "dram__throughput.avg.pct_of_peak_sustained_elapsed",
-
-    # Compute utilization
-    "sm_active_pct":         "sm__active_cycles.avg.pct_of_peak_sustained_elapsed",
-
-    # Warp efficiency (penalizes divergence)
-    "warp_exec_efficiency":  "smsp__thread_inst_executed_per_inst_executed.ratio",
-
-    # Stall reasons (for phase classification)
-    "stall_long_sb":         "smsp__average_warp_latency_per_inst_issued.ratio",
+metrics = {
+    "achieved_occupancy": DEFAULT_NCU_METRICS["achieved_occupancy"],
+    "dram_bw_pct": DEFAULT_NCU_METRICS["dram_bw_pct"],
+    "l2_hit_rate": DEFAULT_NCU_METRICS["l2_hit_rate"],
+    "sm_active_pct": DEFAULT_NCU_METRICS["sm_active_pct"],
 }
 
+collector = CUPTICollector(metrics=metrics)
+pre = collector.preflight()
+if not pre.ok:
+    print("Counters unavailable:", pre.reason)
+else:
+    # Run your kernel twice inside the runner and profile only the 2nd launch.
+    code = """
+import sys
+from pathlib import Path
 
-class CUPTICollector:
-    """
-    Collects GPU hardware counters for a given kernel execution.
+# Ensure repo-local imports work when ncu executes this from a temp directory.
+sys.path.insert(0, str(Path.cwd()))
 
-    Usage:
-        collector = CUPTICollector()
-        state = collector.collect(script_path="/tmp/runner.py")
-        # state is a normalized numpy array of shape (5,)
-    """
+import numpy as np
+from numba import cuda
+from kernels.reduction import run_reduction
 
-    def __init__(self, ncu_path: str = "ncu"):
-        self.ncu_path = ncu_path
-        self._verify_ncu()
+n = 1024 * 1024
+x, out, grid, block, kernel_fn = run_reduction(n, 256, warmup=0, reg_cap=0)
+args = (x, out, np.int32(n))
 
-    def _verify_ncu(self):
-        """Check ncu is available and has GPU access."""
-        result = subprocess.run(
-            [self.ncu_path, "--version"],
-            capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                "Nsight Compute (ncu) not found. "
-                "Install CUDA toolkit or add to PATH. "
-                "On Ubuntu: sudo apt install nsight-compute"
-            )
+kernel_fn[grid, block](*args)  # warmup
+cuda.default_stream().synchronize()
 
-    def collect(self, script_path: str, timeout: int = 120) -> np.ndarray:
-        """
-        Run a Python script under ncu and collect hardware counters.
+kernel_fn[grid, block](*args)  # measured
+cuda.default_stream().synchronize()
+""".lstrip()
 
-        Args:
-            script_path: Path to the Python script that runs the kernel
-            timeout: Maximum seconds to wait
-
-        Returns:
-            Normalized state vector of shape (5,):
-            [achieved_occ, l2_hit_rate, dram_bw_pct, warp_eff, sm_active_pct]
-            All values in [0, 1]
-        """
-        counter_str = ",".join(CUPTI_COUNTERS.values())
-
-        cmd = [
-            self.ncu_path,
-            "--metrics", counter_str,
-            "--csv",
-            "--quiet",
-            "--target-processes", "all",
-            "python3", script_path
-        ]
-
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout
-            )
-            raw = self._parse_csv(result.stdout)
-        except subprocess.TimeoutExpired:
-            print(f"[CUPTI] Timeout collecting from {script_path}")
-            return self._zero_state()
-        except Exception as e:
-            print(f"[CUPTI] Error: {e}")
-            return self._zero_state()
-
-        return self._to_normalized_vector(raw)
-
-    def _parse_csv(self, csv_str: str) -> Dict[str, float]:
-        """Parse ncu CSV output into a dict of metric_name → value."""
-        metrics = {}
-        # ncu CSV format has many columns; we extract Metric Name and Metric Value
-        reader = csv.DictReader(io.StringIO(csv_str))
-        for row in reader:
-            name = row.get("Metric Name", "").strip()
-            value_str = row.get("Metric Value", "0").strip()
-            # Reverse lookup: find our short name for this counter
-            for short_name, full_name in CUPTI_COUNTERS.items():
-                if full_name == name:
-                    try:
-                        # Remove % signs, commas
-                        clean = value_str.replace(",", "").replace("%", "").strip()
-                        metrics[short_name] = float(clean)
-                    except ValueError:
-                        metrics[short_name] = 0.0
-        return metrics
-
-    def _to_normalized_vector(self, raw: Dict[str, float]) -> np.ndarray:
-        """
-        Convert raw counter dict to normalized state vector.
-        All values divided by 100 since counters are in percentage (0-100%).
-        """
-        vec = np.array([
-            raw.get("achieved_occupancy",  0.0) / 100.0,
-            raw.get("l2_hit_rate",         0.0) / 100.0,
-            raw.get("dram_bw_pct",         0.0) / 100.0,
-            raw.get("warp_exec_efficiency", 0.0) / 100.0,
-            raw.get("sm_active_pct",       0.0) / 100.0,
-        ], dtype=np.float32)
-        return np.clip(vec, 0.0, 1.0)
-
-    def _zero_state(self) -> np.ndarray:
-        """Return zero state vector on failure."""
-        return np.zeros(5, dtype=np.float32)
+    res = collector.collect_from_python_code(
+        code,
+        ncu_extra_args=["--launch-skip", "1", "--launch-count", "1"],
+    )
+    print(res.ok, res.reason)
+    print(res.raw)
+    print(res.normalized)
 ```
+
+Normalization convention:
+- `%` / “pct of peak” metrics are normalized by dividing by `100` and clamping to $[0, 1]$.
+- Ratio metrics (keys ending in `_ratio`) are best-effort clamped to $[0, 1]$.
 
 ---
 

@@ -53,6 +53,18 @@ DEFAULT_NCU_METRICS: Dict[str, str] = {
 }
 
 
+# Some Nsight Compute versions / GPU configurations may not emit certain metrics
+# (or may emit them as N/A). For a few key signals, we provide fallback metrics
+# that tend to be more widely available.
+_FALLBACK_METRICS_BY_KEY: Dict[str, list[str]] = {
+    # `sm__active_cycles...` is occasionally missing; throughput is a robust
+    # alternative SM-utilization proxy.
+    "sm_active_pct": [
+        "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+    ],
+}
+
+
 @dataclass(frozen=True)
 class CuptiCollectResult:
     ok: bool
@@ -141,23 +153,59 @@ class CUPTICollector:
 
     def __init__(self, metrics: Optional[Dict[str, str]] = None):
         self.metrics = dict(metrics or DEFAULT_NCU_METRICS)
+        self._preflight_cache: Optional[CuptiCollectResult] = None
 
     def preflight(self) -> CuptiCollectResult:
         """Check whether counters are accessible (permission + tool availability)."""
+
+        if self._preflight_cache is not None:
+            return self._preflight_cache
 
         # Use an occupancy metric as a proxy that counters work.
         metric = self.metrics.get("achieved_occupancy", DEFAULT_NCU_METRICS["achieved_occupancy"])
         res = ncu_metric_smoke_test(metric=metric)
         if res.ok:
-            return CuptiCollectResult(ok=True, reason="ok", raw={}, normalized={}, stdout=res.stdout, stderr=res.stderr)
+            self._preflight_cache = CuptiCollectResult(
+                ok=True,
+                reason="ok",
+                raw={},
+                normalized={},
+                stdout=res.stdout,
+                stderr=res.stderr,
+            )
+            return self._preflight_cache
 
         # Classify the most common failure modes.
         if res.reason == "ncu_not_found":
-            return CuptiCollectResult(ok=False, reason="ncu_not_found", raw={}, normalized={}, stdout=res.stdout, stderr=res.stderr)
+            self._preflight_cache = CuptiCollectResult(
+                ok=False,
+                reason="ncu_not_found",
+                raw={},
+                normalized={},
+                stdout=res.stdout,
+                stderr=res.stderr,
+            )
+            return self._preflight_cache
         if "permission_denied" in res.reason:
-            return CuptiCollectResult(ok=False, reason=res.reason, raw={}, normalized={}, stdout=res.stdout, stderr=res.stderr)
+            self._preflight_cache = CuptiCollectResult(
+                ok=False,
+                reason=res.reason,
+                raw={},
+                normalized={},
+                stdout=res.stdout,
+                stderr=res.stderr,
+            )
+            return self._preflight_cache
 
-        return CuptiCollectResult(ok=False, reason=res.reason, raw={}, normalized={}, stdout=res.stdout, stderr=res.stderr)
+        self._preflight_cache = CuptiCollectResult(
+            ok=False,
+            reason=res.reason,
+            raw={},
+            normalized={},
+            stdout=res.stdout,
+            stderr=res.stderr,
+        )
+        return self._preflight_cache
 
     def collect_from_python_file(
         self,
@@ -166,6 +214,7 @@ class CUPTICollector:
         timeout_s: int = 120,
         python_exe: Optional[str] = None,
         ncu_path: str = "ncu",
+        ncu_extra_args: Optional[list[str]] = None,
     ) -> CuptiCollectResult:
         """Run a Python script under ncu and collect the configured metrics.
 
@@ -174,7 +223,6 @@ class CUPTICollector:
         - run exactly one representative kernel launch,
         - synchronize the default CUDA stream.
         """
-
         script_path = Path(script_path)
         py_exe = python_exe or sys.executable
 
@@ -183,16 +231,33 @@ class CUPTICollector:
         if not pre.ok:
             return pre
 
-        metric_list = list(self.metrics.values())
-        args = [
+        # Build the metric list to request from ncu, including fallbacks.
+        requested_metrics: list[str] = []
+        seen: set[str] = set()
+        for key, metric_name in self.metrics.items():
+            if metric_name and metric_name not in seen:
+                requested_metrics.append(metric_name)
+                seen.add(metric_name)
+
+            for fb in _FALLBACK_METRICS_BY_KEY.get(key, []):
+                if fb and fb not in seen:
+                    requested_metrics.append(fb)
+                    seen.add(fb)
+        args: list[str] = [
             "--metrics",
-            _metrics_arg(metric_list),
+            _metrics_arg(requested_metrics),
             "--csv",
             "--target-processes",
             "all",
+        ]
+
+        if ncu_extra_args:
+            args.extend(list(ncu_extra_args))
+
+        args.extend([
             py_exe,
             str(script_path),
-        ]
+        ])
 
         resolved_ncu = ncu_path
         if ncu_path == "ncu":
@@ -200,8 +265,21 @@ class CUPTICollector:
         if not resolved_ncu:
             return CuptiCollectResult(ok=False, reason="ncu_not_found", raw={}, normalized={})
 
+        # IMPORTANT:
+        # When Python executes a script by filename, sys.path[0] becomes the
+        # script's directory (often a temp folder in our collect_from_* APIs).
+        # That can break imports of local packages like `kernels` / `profiling`.
+        # We fix this by prepending the current working directory to PYTHONPATH.
+        env = dict(os.environ)
+        cwd = os.getcwd()
+        existing = env.get("PYTHONPATH", "")
+        if existing:
+            env["PYTHONPATH"] = cwd + os.pathsep + existing
+        else:
+            env["PYTHONPATH"] = cwd
+
         try:
-            res = run_ncu_command(resolved_ncu, args=args, timeout_s=timeout_s)
+            res = run_ncu_command(resolved_ncu, args=args, timeout_s=timeout_s, env=env)
         except subprocess.TimeoutExpired as e:
             return CuptiCollectResult(
                 ok=False,
@@ -232,11 +310,27 @@ class CUPTICollector:
         raw_out: Dict[str, float] = {}
         norm_out: Dict[str, float] = {}
         for key, metric_name in self.metrics.items():
-            if metric_name not in parsed:
+            chosen_metric_name: Optional[str] = None
+            chosen_value: Optional[float] = None
+
+            # Prefer the explicitly configured metric.
+            if metric_name in parsed:
+                chosen_metric_name = metric_name
+                chosen_value = float(parsed[metric_name])
+
+            # Fall back if missing.
+            if chosen_value is None:
+                for fb in _FALLBACK_METRICS_BY_KEY.get(key, []):
+                    if fb in parsed:
+                        chosen_metric_name = fb
+                        chosen_value = float(parsed[fb])
+                        break
+
+            if chosen_value is None:
                 continue
-            v = float(parsed[metric_name])
-            raw_out[key] = v
-            norm_out[key] = _normalize_metric_value(key, v)
+
+            raw_out[key] = chosen_value
+            norm_out[key] = _normalize_metric_value(key, chosen_value)
 
         ok = bool(raw_out)
         if ok:
@@ -259,13 +353,19 @@ class CUPTICollector:
         *,
         timeout_s: int = 120,
         ncu_path: str = "ncu",
+        ncu_extra_args: Optional[list[str]] = None,
     ) -> CuptiCollectResult:
         """Convenience wrapper: write code to a temp file and profile it."""
 
         with tempfile.TemporaryDirectory(prefix="cupti_collect_") as td:
             script_path = Path(td) / "cupti_runner.py"
             script_path.write_text(code, encoding="utf-8")
-            return self.collect_from_python_file(script_path, timeout_s=timeout_s, ncu_path=ncu_path)
+            return self.collect_from_python_file(
+                script_path,
+                timeout_s=timeout_s,
+                ncu_path=ncu_path,
+                ncu_extra_args=ncu_extra_args,
+            )
 
 
 def default_state_vector(order: Optional[Iterable[str]] = None) -> np.ndarray:

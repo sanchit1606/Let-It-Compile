@@ -2,7 +2,7 @@
 
 This doc explains how to interpret the experimental output in this project.
 
-As of now, only **Phase 0** is implemented and produces results. Later phases can be added here when they exist.
+As of now, **Phase 0** and **Phase 1** are implemented and produce results.
 
 ---
 
@@ -366,8 +366,155 @@ print(df.loc[df.groupby("kernel")["time_ms_mean"].idxmin()])
 
 ---
 
-## Future phases
-When Phase 1+ scripts exist (e.g., Phase 1, Phase 2, etc.), add their interpretation sections here using the same structure:
+## Phase 1 — Real-kernel hardware counters (Nsight Compute / `ncu`)
+
+### Goal (what Phase 1 is trying to measure)
+Phase 1 answers a different question than Phase 0.
+
+- **Phase 0**: “How fast did the kernel run?” and “What occupancy do we *predict* from registers/block size?”
+- **Phase 1**: “What did the GPU *actually do* while running the kernel?” using **hardware performance counters**.
+
+Phase 1 collects a small set of metrics per run for the project’s real kernels:
+- `gemm`
+- `reduction`
+- `softmax`
+
+It writes results to:
+- `results/tables/phase1_result.csv`
+
+### Beginner concept: what are “hardware counters”?
+Modern CPUs/GPUs include tiny “meters” inside the chip that count events while code is running.
+
+Examples:
+- how busy the compute cores were
+- how much memory bandwidth you used
+- cache hit-rate
+
+On NVIDIA GPUs, these counters are exposed through CUPTI and tools like **Nsight Compute**. In this repo we use the Nsight Compute CLI:
+- `ncu`
+
+Important practical note (Windows):
+- On Windows (WDDM), reading performance counters often requires an **Administrator** terminal. If counters are blocked, `ncu` will report `ERR_NVGPUCTRPERM`.
+
+### How to run Phase 1
+
+From the project root, in the `gpu-jit-opt` conda environment:
+
+```bat
+python experiments\phase1_collect_counters.py
+```
+
+Recommended on Windows:
+- Open **Command Prompt** → **Run as administrator** (so counters are available)
+
+Expected terminal output (shape):
+- It prints one line per configuration (kernel × size × block × reg cap)
+- It ends with:
+   - `Done. Rows: ... (ok=...)`
+   - `Saved to: results\tables\phase1_result.csv`
+
+### Phase 1 CSV columns (what each attribute means)
+This is a reference for `results/tables/phase1_result.csv`.
+
+Per-row identifiers
+- `kernel` (string): which benchmark ran: `gemm`, `reduction`, `softmax`.
+- `matrix_size` (int): the size label $N$ used for the run.
+   - `gemm`: multiplies $N \times N$ matrices.
+   - `softmax`: applies softmax to an $N \times N$ matrix, row-wise.
+   - `reduction`: reduces $N \times N$ elements (internally uses `matrix_size * matrix_size`).
+- `block_size` (int): threads per block used by the kernel runner.
+- `reg_cap` (string/int): register cap setting.
+   - `default` means “no cap requested”.
+   - `32`, `64`, ... are caps (Numba `max_registers`, like PTXAS `--maxrregcount`).
+
+Run status / diagnostics
+- `ok` (bool): whether counter collection succeeded for that configuration.
+- `reason` (string): why it succeeded/failed.
+   - `ok` means metrics were parsed.
+   - Common failure reasons include `permission_denied`, `ncu_not_found`, `timeout`, or `no_metrics_parsed`.
+
+Raw vs normalized metric columns
+For each metric key (example: `dram_bw_pct`) Phase 1 writes two columns:
+
+- `{metric}_raw`: the numeric value returned by `ncu`.
+- `{metric}_norm`: a simplified value intended for ML/RL state vectors.
+
+Normalization rules used in this repo:
+- Most metrics are percentages → `norm = raw / 100`, clamped to $[0, 1]$.
+- Keys ending in `_ratio` are treated as “ratio-like” and are **clamped** to $[0, 1]$ (best-effort).
+   - This keeps the RL state bounded, but it also means `_ratio_norm` is not always a linear rescaling of `_ratio_raw`.
+
+### Metrics collected in `phase1_result.csv` (what they mean)
+
+#### `achieved_occupancy_raw` / `_norm`
+- What it measures: a proxy for “how many warps were active” during execution.
+- Typical unit: percent-of-peak (0–100).
+- Interpretation:
+   - Higher is usually better for *latency hiding* (especially memory-bound kernels).
+   - But higher occupancy is not automatically faster (compute-heavy kernels can be fastest at slightly lower occupancy).
+
+#### `dram_bw_pct_raw` / `_norm`
+- What it measures: DRAM throughput as a **percentage of the GPU’s peak DRAM bandwidth**.
+- Interpretation:
+   - High values suggest your kernel is pushing memory bandwidth.
+   - Low values can mean the kernel is compute-bound, underutilized, or too small to saturate the GPU.
+
+#### `l2_hit_rate_raw` / `_norm`
+- What it measures: fraction of memory accesses served by L2 cache (hit-rate).
+- Interpretation:
+   - Higher hit-rate usually means fewer expensive DRAM transactions.
+   - A low hit-rate is common for streaming workloads or very large working sets.
+
+#### `sm_active_pct_raw` / `_norm`
+- What it measures: an SM utilization proxy (“how busy the GPU compute units were”).
+- Why it might vary across machines/tool versions:
+   - Nsight Compute sometimes reports SM utilization via different but related metrics.
+   - The collector requests `sm__active_cycles...` and falls back to `sm__throughput...` if needed.
+- Interpretation:
+   - Higher values mean the SMs were active a larger fraction of time.
+
+#### `warp_exec_efficiency_ratio_raw` / `_norm` (optional)
+- What it measures: a warp efficiency proxy derived from executed thread instructions.
+- Interpretation:
+   - If your kernel has branch divergence or inactive lanes, this can drop.
+   - On some setups this metric’s “raw” scale can look like “active lanes per instruction” (often near 32 when fully efficient).
+- In this repo:
+   - `_norm` is clamped to $[0, 1]$ for safety.
+   - Treat this as an optional/debug signal rather than a primary metric.
+
+### Common gotchas (especially for beginners)
+
+1) “Why is Phase 1 slower than Phase 0?”
+- Phase 1 runs under a profiler (`ncu`). Profilers add overhead.
+
+2) “Why do I need Administrator on Windows?”
+- Windows’ driver model often blocks access to hardware counters unless you run elevated.
+
+3) “Why do some metric columns come out empty?”
+- A metric may not be supported (or may be emitted as N/A) on a given GPU / Nsight Compute version.
+- The collector includes fallbacks for some key signals (like `sm_active_pct`), but not for every possible metric.
+
+4) “Raw vs norm: which should I use?”
+- For human reading/plots: use `_raw`.
+- For RL/ML inputs: use `_norm` (bounded, roughly comparable across metrics).
+
+### Quick workflow to inspect Phase 1 results
+
+```python
+import pandas as pd
+
+df = pd.read_csv("results/tables/phase1_result.csv")
+print(df.head())
+
+# Example: show the best achieved occupancy per kernel
+best = df.loc[df.groupby("kernel")["achieved_occupancy_norm"].idxmax()]
+print(best[["kernel", "matrix_size", "block_size", "reg_cap", "achieved_occupancy_raw"]])
+```
+
+---
+
+## Future phases (Phase 2+)
+Add later phases here using the same structure:
 - goal
 - how to run
 - expected terminal output

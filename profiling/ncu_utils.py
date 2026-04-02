@@ -16,7 +16,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 
 ERR_NVGPUCTRPERM = "ERR_NVGPUCTRPERM"
@@ -69,7 +69,13 @@ def _resolve_executable(name: str) -> Optional[str]:
     return None
 
 
-def _run_ncu_command(ncu_path: str, args: list[str], timeout_s: int) -> subprocess.CompletedProcess:
+def _run_ncu_command(
+    ncu_path: str,
+    args: list[str],
+    timeout_s: int,
+    *,
+    env: Optional[Mapping[str, str]] = None,
+) -> subprocess.CompletedProcess:
     """Run ncu robustly across Windows .cmd/.bat shims."""
 
     p = Path(ncu_path)
@@ -92,6 +98,7 @@ def _run_ncu_command(ncu_path: str, args: list[str], timeout_s: int) -> subproce
             text=True,
             timeout=timeout_s,
             shell=True,
+            env=env,
         )
 
     return subprocess.run(
@@ -99,6 +106,7 @@ def _run_ncu_command(ncu_path: str, args: list[str], timeout_s: int) -> subproce
         capture_output=True,
         text=True,
         timeout=timeout_s,
+        env=env,
     )
 
 
@@ -193,7 +201,13 @@ def resolve_ncu_path() -> Optional[str]:
     return _resolve_executable("ncu")
 
 
-def run_ncu_command(ncu_path: str, args: list[str], timeout_s: int = 60) -> subprocess.CompletedProcess:
+def run_ncu_command(
+    ncu_path: str,
+    args: list[str],
+    timeout_s: int = 60,
+    *,
+    env: Optional[Mapping[str, str]] = None,
+) -> subprocess.CompletedProcess:
     """Public helper: run `ncu` robustly (handles Windows .cmd/.bat shims)."""
 
-    return _run_ncu_command(ncu_path, args=args, timeout_s=timeout_s)
+    return _run_ncu_command(ncu_path, args=args, timeout_s=timeout_s, env=env)
