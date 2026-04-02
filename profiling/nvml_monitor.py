@@ -23,11 +23,13 @@ class GPUState:
 class NVMLMonitor:
     """Lightweight real-time GPU monitor using NVML."""
 
-    def __init__(self, device_index: int = 0):
+    def __init__(self, device_index: int = 0, *, verbose: bool = False):
         pynvml.nvmlInit()
         self.handle = pynvml.nvmlDeviceGetHandleByIndex(device_index)
-        name = pynvml.nvmlDeviceGetName(self.handle)
-        print(f"[NVML] Monitoring: {name}")
+        self._verbose = bool(verbose)
+        if self._verbose:
+            name = pynvml.nvmlDeviceGetName(self.handle)
+            print(f"[NVML] Monitoring: {name}")
 
     def get_state(self) -> GPUState:
         """Sample current GPU state. Fast (<1ms)."""

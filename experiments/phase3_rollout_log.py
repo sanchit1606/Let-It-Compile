@@ -80,22 +80,30 @@ def run_rollouts(
     episode_rows: List[Dict[str, object]] = []
 
     for case_id, (kernel_name, matrix_size) in enumerate(cases):
+        cfg = EpisodeConfig(
+            kernel_name=str(kernel_name),
+            matrix_size=int(matrix_size),
+            max_steps=int(max_steps),
+            warmup=int(warmup),
+            repeats=int(repeats),
+            use_cupti=bool(use_cupti),
+            use_nvml=bool(use_nvml),
+            cupti_timeout_s=int(cupti_timeout_s),
+        )
+
+        # Reuse one environment instance per case to:
+        # - avoid repeated NVML initialization spam
+        # - amortize Python-side setup
+        env = KernelOptimizationEnv(cfg)
+
+        print(f"[phase3] case={case_id} kernel={kernel_name} N={int(matrix_size)} episodes={int(episodes_per_case)}")
+
         for ep in range(int(episodes_per_case)):
             episode_id = case_id * int(episodes_per_case) + ep
             episode_seed = int(seed + episode_id)
 
-            cfg = EpisodeConfig(
-                kernel_name=str(kernel_name),
-                matrix_size=int(matrix_size),
-                max_steps=int(max_steps),
-                warmup=int(warmup),
-                repeats=int(repeats),
-                use_cupti=bool(use_cupti),
-                use_nvml=bool(use_nvml),
-                cupti_timeout_s=int(cupti_timeout_s),
-            )
+            print(f"[phase3]  episode={episode_id} seed={episode_seed} steps={int(max_steps)} cupti={bool(use_cupti)} nvml={bool(use_nvml)}")
 
-            env = KernelOptimizationEnv(cfg)
             obs, info0 = env.reset(seed=episode_seed)
 
             # Metrics schema is driven by the env's obs spec.
@@ -177,6 +185,8 @@ def run_rollouts(
                     "steps": int(steps_done),
                 }
             )
+
+            print(f"[phase3]  episode={episode_id} done best_speedup={best_speedup:.3f} mean_reward={float(sum_reward / steps_done):.4f}")
 
     _write_csv(out_steps_csv, step_rows)
     _write_csv(out_episodes_csv, episode_rows)
