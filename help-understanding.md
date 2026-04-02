@@ -4,6 +4,18 @@ This doc explains how to interpret the experimental output in this project.
 
 As of now, **Phase 0** and **Phase 1** are implemented and produce results.
 
+## Objectives
+
+Project objectives (what the experiments are trying to prove):
+- Show that compiler/runtime knobs (especially register capping via `--maxrregcount`/Numba `max_registers`) materially change performance.
+- Connect those performance changes to **measurable GPU signals** (occupancy- and utilization-like counters from `ncu`).
+- Produce clean CSV artifacts that can be reused later for RL (Phase 3+) and for writing up results.
+
+This document’s objectives (what you should be able to do after reading):
+- Understand what each phase measures and why it exists.
+- Run Phase 0/1 and know where their CSV outputs are saved.
+- Interpret the most important CSV columns and common failure modes (especially on Windows).
+
 ---
 
 ## Phase 0 — Foundational Baseline Table
@@ -513,7 +525,54 @@ print(best[["kernel", "matrix_size", "block_size", "reg_cap", "achieved_occupanc
 
 ---
 
-## Future phases (Phase 2+)
+## Phase 2 — Benchmark kernels (the workloads we optimize)
+
+### Goal (what Phase 2 is trying to achieve)
+Phase 2 is about having a **small set of real CUDA kernels** that:
+
+- represent different performance regimes (compute-bound vs memory-bound)
+- are stable to run repeatedly
+- can be compiled/run under different settings (block size, register cap)
+
+These kernels are the “tasks” the RL agent will later learn to optimize.
+
+Implemented kernels in this repo:
+- **GEMM** (`kernels/gemm.py`): tiled matrix multiplication (typically compute-heavy)
+- **Reduction** (`kernels/reduction.py`): sum reduction (typically memory/latency sensitive)
+- **Softmax** (`kernels/softmax.py`): row-wise softmax (mixed compute + memory)
+
+### Beginner concept: what does “kernel correctness” mean?
+Before optimizing performance, we must ensure the kernel computes the right answer.
+
+Examples:
+- GEMM output should match $C = A \times B$ (within floating point tolerance)
+- Reduction output should match `sum(x)`
+- Softmax output should be non-negative and each row should sum to about 1
+
+Floating point note:
+- GPU results may not match CPU results *bit-for-bit* due to different instruction order and math implementations.
+- We use **tolerances** (“close enough”) rather than exact equality.
+
+### How to validate Phase 2 (recommended before Phase 3/RL)
+Run the kernel unit tests:
+
+```bat
+pytest -q tests\test_kernels.py -vv
+```
+
+What these tests do:
+- Skip safely if CUDA is not available in the current Python environment
+- Verify the kernel modules import correctly
+- Run small problem sizes and check numerical correctness
+- Run both `reg_cap=default` and a capped variant (e.g. `reg_cap=32`) to ensure the “register cap” path is stable
+
+If Phase 2 tests fail:
+- Fix correctness first (don’t start RL yet)
+- Then rerun Phase 0/1 experiments, because they depend on these kernels being valid
+
+---
+
+## Future phases (Phase 3+)
 Add later phases here using the same structure:
 - goal
 - how to run

@@ -57,6 +57,9 @@ include_trailing_comma = true
 testpaths = ["tests"]
 python_files = "test_*.py"
 addopts = "-v --tb=short"
+markers = [
+    "slow: validation tests for medium/large sizes (opt-in via --runslow)",
+]
 
 [tool.mypy]
 python_version = "3.10"

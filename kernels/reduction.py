@@ -83,4 +83,8 @@ def run_reduction(N: int, block_size: int = 256, warmup: int = 1, reg_cap: int =
         kernel_fn[grid, block](x, out, np.int32(N))
     cuda.default_stream().synchronize()
 
+    # Important: the reduction uses atomic accumulation into out[0].
+    # Ensure the returned output buffer is clean for the caller's measured launch.
+    out.copy_to_device(out_host_zero)
+
     return x, out, grid, block, kernel_fn

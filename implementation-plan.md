@@ -16,6 +16,21 @@
 
 ---
 
+## Objectives
+
+This implementation plan is written to make the project **buildable, measurable, and publishable** on a single RTX 3050 Ti-class GPU.
+
+Primary objectives:
+- **Establish a trustworthy baseline**: quantify how register capping and launch parameters affect runtime and occupancy signals.
+- **Make GPU behavior observable**: collect a small, stable set of Nsight Compute (`ncu`) metrics per kernel run and normalize them for learning.
+- **Create RL-ready benchmarks**: ensure kernels are correct, repeatable, and configurable (block size, register cap, shared memory where applicable).
+- **Enable adaptive optimization**: implement a Gymnasium environment where actions map to compiler/runtime knobs and rewards map to speedup.
+
+Non-objectives (explicitly out of scope for this prototype):
+- Building a full production compiler toolchain.
+- Chasing absolute peak performance across all kernels/GPUs.
+- Supporting every OS/GPU/driver combination without fallbacks.
+
 ## Table of Contents
 
 1. [Environment Setup](#1-environment-setup)

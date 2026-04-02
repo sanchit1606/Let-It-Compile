@@ -1,7 +1,12 @@
 # Error Log
 
 ## Scope
-Errors encountered while setting up and running `experiments/phase0_baseline_table.py` in this workspace, including root cause and remediation.
+Errors encountered while setting up and running Phase 0–2 in this workspace, including root cause and remediation.
+
+Covered entry points:
+- Phase 0: `experiments/phase0_baseline_table.py`
+- Phase 1: `experiments/phase1_collect_counters.py` (Nsight Compute / `ncu`)
+- Phase 2: kernel validation via `tests/test_kernels.py`
 
 ---
 
@@ -124,7 +129,7 @@ Errors encountered while setting up and running `experiments/phase0_baseline_tab
 
 ---
 
-## 7) Kernel Runtime Access Violations (Current Blocking Issue)
+## 7) Kernel Runtime Access Violations (Phase 0 blocker)
 
 **Symptom**
 - During Phase 0 sweep, configs failed with:
@@ -221,7 +226,144 @@ Errors encountered while setting up and running `experiments/phase0_baseline_tab
 
 **Conclusion across both envs**
 - Different failure phases were fixed (dependency mismatch, ABI mismatch, libdevice pathing),
-  but final blocker persists as a low-level Windows CUDA JIT/runtime access violation.
+  and the final low-level Windows CUDA/Numba synchronization access violation was resolved by switching to stream-level synchronization.
+
+---
+
+## 10) Phase 1 SyntaxError: Windows path `unicodeescape` in docstrings
+
+**Symptom**
+- Running Phase 1 scripts failed immediately with a Python parse error such as:
+  - `SyntaxError: (unicode error) 'unicodeescape' codec can't decode bytes in position ...: truncated \UXXXXXXXX escape`
+
+**Cause**
+- Triple-quoted docstrings contained Windows paths like `C:\Users\...` written as `C:\Users\...` (single backslashes), and sequences like `\U` were interpreted as Unicode escape prefixes.
+
+**Fix**
+- Escaped backslashes in docstrings (e.g. `C:\\Users\\...`) or rewrote them as raw strings.
+
+**Result**
+- Phase 1 scripts import and run normally.
+
+---
+
+## 11) Phase 1 Import errors when running scripts by path
+
+**Symptom**
+- Running `python experiments\phase1_collect_counters.py` raised import errors like:
+  - `ModuleNotFoundError: No module named 'profiling'`
+
+**Cause**
+- When executing a script by file path, Python sets `sys.path[0]` to the script’s directory (here: `experiments/`). Repo-local packages (`profiling/`, `kernels/`) are not on the import path.
+
+**Fix**
+- Added a repo-root `sys.path` bootstrap in Phase 1 scripts so they work when run directly.
+
+**Result**
+- Phase 1 scripts can be run from project root without `PYTHONPATH` fiddling.
+
+---
+
+## 12) Phase 1 `ncu` returned rc=1 with no useful diagnostics
+
+**Symptom**
+- Phase 1 collection reported failures like:
+  - `reason = ncu_failed_rc_1`
+- But the console output did not include enough detail to tell why `ncu` failed.
+
+**Cause**
+- The initial collector treated nonzero return codes as a generic failure and did not surface stderr/stdout content (where Nsight Compute prints the real reason).
+
+**Fix**
+- On the first `ncu` failure, print a short head of `stdout`/`stderr` to expose the real error.
+- Disabled `--launch-skip` / `--launch-count` by default (these can fail on some Windows setups), and added a retry path that runs without launch-control flags.
+
+**Result**
+- The actual causes (import/path issues, flag incompatibilities, permission problems) became visible and fixable.
+
+---
+
+## 13) Phase 1 Temp-runner import failures under `ncu`
+
+**Symptom**
+- `ncu` execution failed with Python import errors inside the generated runner, e.g.:
+  - `ModuleNotFoundError: No module named 'kernels'` (or `profiling`)
+
+**Cause**
+- Phase 1 runs kernels via a temporary runner script. Nsight Compute executes it from a temporary directory; repo-local imports are not available unless the repo root is explicitly added.
+
+**Fix**
+- Injected repo root into the runner’s `sys.path` (e.g. `sys.path.insert(0, r"<repo_root>")`).
+- Also ensured `PYTHONPATH` includes the repo root when spawning `ncu` (environment override).
+
+**Result**
+- `ncu` could import the project modules reliably; Phase 1 counter collection succeeded across the sweep.
+
+---
+
+## 14) Phase 1 CSV parsing bug: header line offset
+
+**Symptom**
+- `ncu --csv` ran, but the collector returned `no_metrics_parsed` (all metrics missing/empty).
+
+**Cause**
+- Parsing started *after* finding the header marker text (e.g. “Metric Name”), not from the beginning of the header line. This misaligned columns and caused metric extraction to fail.
+
+**Fix**
+- Parse from the beginning of the header line containing the CSV columns (the line that includes “Metric Name”).
+
+**Result**
+- Metrics dictionaries populated correctly and were written to `results\tables\phase1_result.csv`.
+
+---
+
+## 15) Phase 1 metric availability variance: `sm_active_pct` columns empty
+
+**Symptom**
+- `sm_active_pct_raw` / `sm_active_pct_norm` came out empty even when other counters were present.
+
+**Cause**
+- Nsight Compute metric naming/availability differs across versions and driver/tool combinations. The initially requested SM-active metric was not always emitted.
+
+**Fix**
+- Added fallback metric support so `sm_active_pct` can be derived from an alternative “SM throughput/utilization” metric when the primary metric is missing.
+
+**Result**
+- `sm_active_pct_*` is now populated on more setups (and fails gracefully when not available).
+
+---
+
+## 16) Phase 1 counter permission failures on Windows (WDDM)
+
+**Symptom**
+- `ncu` reported counter access issues (common strings include `ERR_NVGPUCTRPERM`) and the collector classified it as `permission_denied`.
+
+**Cause**
+- On Windows (WDDM), GPU performance counters are often restricted unless the process is elevated (Administrator) and/or the driver is configured to allow access.
+
+**Fix**
+- Added a preflight/smoke test that detects and reports this condition clearly.
+- Operational fix: run Phase 1 from an **Administrator** Command Prompt.
+
+**Result**
+- Phase 1 can reliably distinguish “tool not installed” vs “permissions blocked” vs “other failure”.
+
+---
+
+## 17) Phase 2 validation gap: kernel tests were placeholders
+
+**Symptom**
+- `tests/test_kernels.py` existed but contained placeholder tests (effectively no correctness validation).
+
+**Cause**
+- Phase 2 kernel work started before a correctness gate was added; performance experiments risked optimizing incorrect outputs.
+
+**Fix**
+- Implemented skip-safe correctness tests for `gemm`, `reduction`, and `softmax`.
+- Each kernel is tested on a small input against a NumPy reference (or invariants for softmax) and tested both for `reg_cap=default` and a capped variant (e.g. `reg_cap=32`).
+
+**Result**
+- Phase 2 now has a basic correctness safety net before moving to RL (Phase 3).
 
 ---
 
@@ -231,3 +373,5 @@ Errors encountered while setting up and running `experiments/phase0_baseline_tab
 - NVVM/libdevice discovery issues were patched in code.
 - The runtime access violation blocker was resolved by replacing `cuda.synchronize()` (context sync) with `cuda.default_stream().synchronize()` (stream sync) in Phase 0 code paths.
 - Phase 0 now produces a non-empty baseline table (`81` rows).
+- Phase 1 counter collection was stabilized on Windows (path/import issues + CSV parsing + metric fallbacks) and can write a populated `results\tables\phase1_result.csv` when counter permissions allow it.
+- Phase 2 now includes kernel correctness tests so future optimization steps don’t regress correctness silently.
