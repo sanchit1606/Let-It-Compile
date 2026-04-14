@@ -19,13 +19,13 @@
 
 This project implements a **7-phase prototype** for automated GPU kernel compilation optimization:
 
-1. **Phase 0** — Foundational Experiment (Baseline table: regcap → occupancy → runtime)
-2. **Phase 1** — CUPTI Instrumentation (Hardware counter collection via ncu)
-3. **Phase 2** — Benchmark Kernels (GEMM, reduction, softmax)
-4. **Phase 3** — RL Environment (Gymnasium interface)
-5. **Phase 4** — PPO Agent Training (Stable-Baselines3)
-6. **Phase 5** — BiLSTM Phase Detector (Optional: classify kernel phases)
-7. **Phase 6** — GNN IR Encoder (Optional: kernel structure encoding)
+1. **Phase 0** - Foundational Experiment (Baseline table: regcap → occupancy → runtime)
+2. **Phase 1** - CUPTI Instrumentation (Hardware counter collection via ncu)
+3. **Phase 2** - Benchmark Kernels (GEMM, reduction, softmax)
+4. **Phase 3** - RL Environment (Gymnasium interface)
+5. **Phase 4** - PPO Agent Training (Stable-Baselines3)
+6. **Phase 5** - BiLSTM Phase Detector (Optional: classify kernel phases)
+7. **Phase 6** - GNN IR Encoder (Optional: kernel structure encoding)
 
 ## Hardware Target
 
