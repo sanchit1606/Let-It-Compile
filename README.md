@@ -27,6 +27,24 @@ This project implements a **7-phase prototype** for automated GPU kernel compila
 6. **Phase 5** — BiLSTM Phase Detector (Optional: classify kernel phases)
 7. **Phase 6** — GNN IR Encoder (Optional: kernel structure encoding)
 
+## 📖 Documentation
+
+Complete documentation is available in the `docs/` folder. Open it in your browser:
+
+- **Quick Launch (Windows):** Double-click `open_docs.bat`
+- **Quick Launch (Any OS):** `python open_docs.py`
+- **Manual:** Open `docs/index.html` directly in your browser
+
+The documentation includes:
+- Getting started guide
+- Detailed explanation of all phases
+- GPU concepts (occupancy, registers, metrics)
+- Installation & setup instructions
+- Result interpretation guides
+- API reference
+- Troubleshooting tips
+- Developer information
+
 ## Hardware Target
 
 - **GPU:** NVIDIA RTX 3050 Ti Laptop GPU

@@ -1,0 +1,1139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Let It Compile: RL Adaptive Register Allocation for GPU Kernels - Documentation</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h1>Let It Compile</h1>
+                <p class="subtitle">Adaptive GPU Kernel Optimization</p>
+            </div>
+            
+            <nav class="sidebar-nav">
+                <h3>Getting Started</h3>
+                <ul>
+                    <li><a href="#overview" class="nav-link active">Overview</a></li>
+                    <li><a href="#quickstart" class="nav-link">Quick Start</a></li>
+                    <li><a href="#installation" class="nav-link">Installation</a></li>
+                </ul>
+
+                <h3>Core Concepts</h3>
+                <ul>
+                    <li><a href="#concepts-registers" class="nav-link">Registers & Occupancy</a></li>
+                    <li><a href="#concepts-compiler" class="nav-link">Compiler Knobs</a></li>
+                    <li><a href="#concepts-gpu-metrics" class="nav-link">GPU Metrics</a></li>
+                </ul>
+
+                <h3>Phases</h3>
+                <ul>
+                    <li><a href="#phase0" class="nav-link">Phase 0: Baseline</a></li>
+                    <li><a href="#phase1" class="nav-link">Phase 1: Hardware Counters</a></li>
+                    <li><a href="#phase2" class="nav-link">Phase 2: Correctness</a></li>
+                    <li><a href="#phase3" class="nav-link">Phase 3: RL & Training</a></li>
+                </ul>
+
+                <h3>Advanced</h3>
+                <ul>
+                    <li><a href="#kernels" class="nav-link">Kernel Implementations</a></li>
+                    <li><a href="#profiling" class="nav-link">Profiling & Metrics</a></li>
+                    <li><a href="#configuration" class="nav-link">Configuration</a></li>
+                </ul>
+
+                <h3>Artifacts & Results</h3>
+                <ul>
+                    <li><a href="#artifacts" class="nav-link">CSV Schemas</a></li>
+                    <li><a href="#results" class="nav-link">Interpreting Results</a></li>
+                </ul>
+
+                <h3>Reference</h3>
+                <ul>
+                    <li><a href="#api" class="nav-link">API Reference</a></li>
+                    <li><a href="#troubleshooting" class="nav-link">Troubleshooting</a></li>
+                    <li><a href="#developer" class="nav-link">Developer Info</a></li>
+                </ul>
+            </nav>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="content">
+            <!-- Overview Section -->
+            <section id="overview" class="doc-section active">
+                <h1>Let It Compile: An RL Approach to Adaptive Register Allocation for GPU Kernel Optimization Across the Stack</h1>
+                <p class="lead">A comprehensive framework for measuring and optimizing GPU kernel performance through compiler knobs, hardware metrics collection, and reinforcement learning.</p>
+
+                <h2>Project Overview</h2>
+                <p>This project systematically explores the relationship between compiler/runtime knobs (specifically register capping) and GPU performance metrics. It provides a complete pipeline from baseline measurement to automated optimization using Proximal Policy Optimization (PPO).</p>
+
+                <h2>Research Goal</h2>
+                <p>Demonstrate that an RL agent conditioned on CUPTI hardware counter signals can <strong>adaptively select</strong> compiler knobs (register cap, block size, shared memory) to outperform static PTXAS defaults on real GPU kernels (GEMM, reduction, softmax).</p>
+
+                <h2>Primary Objectives</h2>
+                <ul>
+                    <li><strong>Establish trustworthy baseline:</strong> Quantify how register capping and launch parameters affect runtime and occupancy signals</li>
+                    <li><strong>Make GPU behavior observable:</strong> Collect stable set of Nsight Compute (ncu) metrics and normalize them for learning</li>
+                    <li><strong>Create RL-ready benchmarks:</strong> Ensure kernels are correct, repeatable, and configurable (block size, register cap, shared memory)</li>
+                    <li><strong>Enable adaptive optimization:</strong> Implement Gymnasium environment where actions map to compiler/runtime knobs and rewards map to speedup</li>
+                    <li><strong>Produce publication-ready artifacts:</strong> Clean CSV outputs and metrics for research dissemination</li>
+                </ul>
+
+                <h2>Non-Objectives (Out of Scope)</h2>
+                <ul>
+                    <li>Building a full production compiler toolchain</li>
+                    <li>Chasing absolute peak performance across all kernels/GPUs</li>
+                    <li>Supporting every OS/GPU/driver combination without fallbacks</li>
+                </ul>
+
+                <h2>Hardware Target</h2>
+                <div class="info-box">
+                    <strong>GPU:</strong> NVIDIA RTX 3050 Ti Laptop (Ampere, SM 8.6)<br>
+                    <strong>Compute Capability:</strong> 8.6<br>
+                    <strong>Streaming Multiprocessors:</strong> 20 SMs<br>
+                    <strong>CUDA Cores:</strong> 2048<br>
+                    <strong>Max Warps/SM:</strong> 48<br>
+                    <strong>Memory:</strong> 4GB GDDR6<br>
+                    <strong>Memory Bandwidth:</strong> ~288 GB/s
+                </div>
+
+                <h3>Technology Stack</h3>
+                <ul>
+                    <li><strong>Numba CUDA:</strong> JIT kernel compilation with register capping</li>
+                    <li><strong>Nsight Compute:</strong> Hardware counter collection via CLI</li>
+                    <li><strong>NVIDIA ML Python:</strong> NVML telemetry (GPU util, memory, temperature)</li>
+                    <li><strong>Gymnasium:</strong> RL environment interface</li>
+                    <li><strong>Stable-Baselines3:</strong> PPO implementation</li>
+                    <li><strong>PyTorch:</strong> Neural network backend (GPU-accelerated)</li>
+                </ul>
+            </section>
+
+            <!-- Quick Start Section -->
+            <section id="quickstart" class="doc-section">
+                <h1>Quick Start</h1>
+
+                <h2>Activate Environment</h2>
+                <pre><code>conda activate gpu-jit-opt</code></pre>
+
+                <h2>Run Phase 0 (Baseline Measurement)</h2>
+                <p>Measure kernel performance across different compiler knobs:</p>
+                <pre><code>python experiments/phase0_baseline_table.py</code></pre>
+                <p><strong>Output:</strong> <code>results/tables/phase0_baseline.csv</code></p>
+                <p><strong>Time:</strong> ~3 seconds</p>
+
+                <h2>Run Phase 3 Rollout Logging (NVML-only)</h2>
+                <p>Generate environment step logs with lightweight telemetry:</p>
+                <pre><code>python phase3_rollout_log.py --use-nvml --kernels gemm reduction softmax --matrix-sizes 256 512 --episodes-per-case 1 --max-steps 10 --warmup 1 --repeats 5</code></pre>
+                <p><strong>Output:</strong> <code>results/tables/phase3_rollout.csv</code>, <code>phase3_episode_summary.csv</code></p>
+                <p><strong>Time:</strong> ~2-5 minutes</p>
+
+                <h2>Train PPO Agent</h2>
+                <p>Train a reinforcement learning agent to learn optimal configurations:</p>
+                <pre><code>python train_rl.py --total-steps 50000 --max-episode-len 50 --use-nvml --eval-freq 5000 --n-eval-episodes 5</code></pre>
+                <p><strong>Output:</strong> <code>results/models/ppo_final.zip</code></p>
+                <p><strong>Time:</strong> ~15-30 minutes (NVML-only)</p>
+
+                <h2>Next Steps</h2>
+                <ol>
+                    <li>Review <a href="#phase0">Phase 0</a> baseline results in CSV</li>
+                    <li>Validate kernel correctness with <a href="#phase2">Phase 2</a> tests</li>
+                    <li>Run <a href="#phase3">Phase 3</a> environment logging</li>
+                    <li>Train or load a PPO policy</li>
+                    <li>Analyze results and visualize improvements</li>
+                </ol>
+            </section>
+
+            <!-- Installation Section -->
+            <section id="installation" class="doc-section">
+                <h1>Installation & Setup</h1>
+
+                <h2>Prerequisites</h2>
+                <ul>
+                    <li>NVIDIA GPU with CUDA compute capability 6.0+</li>
+                    <li>NVIDIA CUDA Toolkit 11.8+ installed</li>
+                    <li>Nsight Compute (for Phase 1 counter collection)</li>
+                    <li>Conda or Miniconda</li>
+                </ul>
+
+                <h2>Step 1: Clone and Setup Environment</h2>
+                <pre><code># Create conda environment
+conda create -n gpu-jit-opt python=3.10
+
+# Activate
+conda activate gpu-jit-opt
+
+# Install PyTorch with CUDA support
+conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
+
+# Install Numba CUDA
+conda install numba
+
+# Install remaining dependencies
+pip install -r requirements.txt</code></pre>
+
+                <h2>Step 2: Verify Installation</h2>
+                <pre><code>python check_cuda.py</code></pre>
+                <p>Should report:</p>
+                <ul>
+                    <li>CUDA available: True</li>
+                    <li>Your GPU name and memory</li>
+                    <li>CUDA operations work</li>
+                </ul>
+
+                <h2>Step 3: Verify Kernels</h2>
+                <pre><code>pytest tests/test_kernels.py -v</code></pre>
+                <p>Should show all tests passing.</p>
+
+                <h2>Troubleshooting Installation</h2>
+                <div class="warning-box">
+                    <strong>CUDA not found:</strong> Reinstall PyTorch with CUDA support using the command above.<br><br>
+                    <strong>Numba compilation errors:</strong> Ensure NVIDIA drivers are up-to-date and CUDA Toolkit is installed in system PATH.<br><br>
+                    <strong>Permission denied (counters):</strong> Run Command Prompt as Administrator for Phase 1 (CUPTI) collection.
+                </div>
+            </section>
+
+            <!-- Concepts Section -->
+            <section id="concepts-registers" class="doc-section">
+                <h1>Core Concepts: Registers & Occupancy</h1>
+
+                <h2>GPU Memory Hierarchy</h2>
+                <p>GPUs organize memory in multiple tiers with different speeds and scopes:</p>
+                <ul>
+                    <li><strong>Registers:</strong> Fastest, per-thread storage inside GPU core. Limited count per thread.</li>
+                    <li><strong>Shared Memory:</strong> Fast memory shared by threads in a block. Enables cooperation.</li>
+                    <li><strong>L2 Cache:</strong> On-chip cache for all accesses. Improves locality.</li>
+                    <li><strong>Global Memory (VRAM):</strong> Largest but slowest. GPU main memory.</li>
+                </ul>
+
+                <h2>Register Pressure</h2>
+                <p>Register count per thread is a critical resource constraint:</p>
+                <ul>
+                    <li><strong>Low register usage:</strong> More threads can be resident → higher occupancy. But may require "spilling" to slower memory.</li>
+                    <li><strong>High register usage:</strong> Few threads resident → lower occupancy. But fewer memory transactions.</li>
+                    <li><strong>Trade-off:</strong> The optimal configuration depends on kernel compute intensity and memory access patterns.</li>
+                </ul>
+
+                <h2>What is "Occupancy"?</h2>
+                <p>Occupancy is the ratio of <em>active warps</em> to <em>maximum possible warps</em> on a Streaming Multiprocessor (SM):</p>
+                <p style="text-align:center; margin: 15px 0; font-weight: bold;">occupancy = active_warps_per_SM / max_warps_per_SM</p>
+                <ul>
+                    <li>On Ampere (SM 8.6), <strong>max warps per SM is 48</strong></li>
+                    <li>So occupancy of <strong>0.75 means 36 warps are resident</strong></li>
+                    <li>Occupancy of <strong>1.0 means 48 warps (100% occupancy)</strong></li>
+                </ul>
+
+                <h3>GPU Architecture Definitions</h3>
+                <ul>
+                    <li><strong>Thread:</strong> Smallest unit of execution.</li>
+                    <li><strong>Warp:</strong> Group of 32 threads that execute in lockstep (SIMT model). NVIDIA GPUs process 32 threads together.</li>
+                    <li><strong>Block:</strong> User-defined group of threads that can cooperate via shared memory and synchronization.</li>
+                    <li><strong>Grid:</strong> All blocks launched for a single kernel call.</li>
+                    <li><strong>SM (Streaming Multiprocessor):</strong> Physical "core cluster" on the GPU. Each SM runs blocks and manages warps.</li>
+                </ul>
+
+                <h3>Why Occupancy Matters</h3>
+                <ul>
+                    <li><strong>Memory-bound kernels:</strong> Higher occupancy helps <em>hide memory latency</em>. While some warps wait for data, others execute → better throughput.</li>
+                    <li><strong>Compute-bound kernels:</strong> Occupancy is less critical. The bottleneck is compute units, not memory latency.</li>
+                    <li><strong>Important caveat:</strong> <strong>100% occupancy does NOT guarantee fast execution.</strong> A kernel may have 100% occupancy but still be slow if it's memory-bound and has poor data reuse.</li>
+                </ul>
+
+                <h3>How Occupancy Changes</h3>
+                <p>Occupancy is limited by GPU resource constraints:</p>
+                <ul>
+                    <li><strong>Registers per thread:</strong> More registers → fewer warps fit → lower occupancy</li>
+                    <li><strong>Threads per block:</strong> Larger blocks → fewer blocks fit per SM → may reduce occupancy</li>
+                    <li><strong>Shared memory per block:</strong> More shared memory per block → fewer blocks fit</li>
+                </ul>
+
+                <h2>Register Capping Trade-offs</h2>
+                <p>We use compiler flags to limit register usage:</p>
+                <pre><code>reg_cap = 32  # Request: compile to use ≤ 32 registers per thread
+# Applied via Numba: @cuda.jit(..., max_registers=32)</code></pre>
+                <p>If you cap registers too low, the compiler must <strong>spill</strong> excess values into local memory (which lives in global memory), making the kernel much slower. But allowing many registers means fewer threads can be resident on an SM (lower occupancy). The optimal register cap depends on the kernel's compute intensity and memory access patterns.</p>
+
+                <h3>The Register Cap vs Occupancy Trade-off (Example)</h3>
+                <p>For a kernel with 256 threads/block on RTX 3050 Ti:</p>
+                <table class="csv-table">
+                    <tr>
+                        <th>Register Cap</th>
+                        <th>Actual Regs/Thread</th>
+                        <th>Warps Fitting/SM</th>
+                        <th>Occupancy</th>
+                        <th>Typical Effect</th>
+                    </tr>
+                    <tr>
+                        <td>default</td>
+                        <td>48</td>
+                        <td>16</td>
+                        <td>0.33</td>
+                        <td>Low occupancy, no spilling</td>
+                    </tr>
+                    <tr>
+                        <td>64</td>
+                        <td>64</td>
+                        <td>12</td>
+                        <td>0.25</td>
+                        <td>Very low, forced spilling</td>
+                    </tr>
+                    <tr>
+                        <td>32</td>
+                        <td>36</td>
+                        <td>24</td>
+                        <td>0.50</td>
+                        <td>Higher occupancy, potential spilling</td>
+                    </tr>
+                </table>
+            </section>
+
+            <section id="concepts-compiler" class="doc-section">
+                <h1>Compiler Knobs & Configuration</h1>
+
+                <h2>Key Knobs in This Project</h2>
+
+                <h3>1. Block Size (Threads per Block)</h3>
+                <p>Determines how many threads cooperate in a block.</p>
+                <ul>
+                    <li><strong>Values:</strong> 64, 128, 256, 512</li>
+                    <li><strong>Effect on occupancy:</strong> Larger blocks → fewer blocks fit per SM → may reduce occupancy.</li>
+                    <li><strong>Effect on performance:</strong> Larger blocks can improve shared memory efficiency and reduce launch overhead.</li>
+                </ul>
+
+                <h3>2. Register Cap (max_registers)</h3>
+                <p>Maximum registers per thread requested during compilation.</p>
+                <ul>
+                    <li><strong>Values:</strong> 0 (default), 32, 64</li>
+                    <li><strong>Effect:</strong> Lower caps force the compiler to spill, reducing register usage but potentially increasing memory pressure.</li>
+                    <li><strong>Numba implementation:</strong> <code>@cuda.jit(..., max_registers=32)</code></li>
+                </ul>
+
+                <h2>Why We Sweep Over These Knobs</h2>
+                <p>Different kernels respond differently:</p>
+                <ul>
+                    <li>Compute-heavy kernels (GEMM) may benefit from high register budgets and larger blocks.</li>
+                    <li>Memory-heavy kernels (reduction) may be sensitive to occupancy and prefer smaller register caps.</li>
+                    <li>Mixed kernels (softmax) show complex trade-offs.</li>
+                </ul>
+            </section>
+
+            <section id="concepts-gpu-metrics" class="doc-section">
+                <h1>GPU Metrics & Profiling</h1>
+
+                <h2>CUPTI Metrics (Nsight Compute)</h2>
+                <p>Hardware counters collected via NVIDIA Nsight Compute CLI (<code>ncu</code>). These are <strong>real measurements</strong> taken while the kernel ran:</p>
+
+                <h3>Achieved Occupancy</h3>
+                <p><strong>What it measures:</strong> Proxy for warps active during execution.</p>
+                <p><strong>Metric:</strong> <code>sm__warps_active.avg.pct_of_peak_sustained_active</code></p>
+                <ul>
+                    <li><strong>Range:</strong> 0–1 (or 0–100%)</li>
+                    <li><strong>Interpretation:</strong> <strong>Fraction of max warps</strong> that were on average active during the kernel run.</li>
+                    <li><strong>Example:</strong> 0.6 on RTX 3050 Ti means ~29 of 48 max warps per SM were active on average.</li>
+                    <li><strong>Why it matters:</strong> High occupancy helps latency hiding for memory-bound kernels.</li>
+                </ul>
+
+                <h3>L2 Cache Hit Rate</h3>
+                <p><strong>What it measures:</strong> Fraction of memory requests served from L2 cache (vs DRAM).</p>
+                <p><strong>Metric:</strong> <code>lts__t_sector_hit_rate.pct</code></p>
+                <ul>
+                    <li><strong>Range:</strong> 0–1</li>
+                    <li><strong>Interpretation:</strong> Higher = better locality, fewer expensive DRAM transactions.</li>
+                    <li><strong>Example:</strong> 0.9 hit rate means 90% of memory accesses were served from L2, only 10% needed DRAM.</li>
+                    <li><strong>Why it matters:</strong> Low hit rates indicate streaming memory access (poor temporal locality).</li>
+                </ul>
+
+                <h3>DRAM Bandwidth</h3>
+                <p><strong>What it measures:</strong> DRAM throughput as <strong>percentage of peak</strong> bandwidth.</p>
+                <ul>
+                    <li><strong>Range:</strong> 0–1</li>
+                    <li><strong>Interpretation:</strong> High values (0.7–1.0) suggest memory-bound kernel pushing max bandwidth.</li>
+                    <li><strong>Example on RTX 3050 Ti:</strong> Peak DRAM BW ~ 288 GB/s. If util is 0.5, actual BW ~ 144 GB/s.</li>
+                    <li><strong>Why it matters:</strong> If DRAM BW is high and speedup is low, kernel is memory-limited.</li>
+                </ul>
+
+                <h3>SM Active Percentage</h3>
+                <p>Compute unit utilization. Metric: <code>sm__throughput.avg.pct_of_peak_sustained_active</code></p>
+                <ul>
+                    <li><strong>Range:</strong> 0–1</li>
+                    <li><strong>Interpretation:</strong> Fraction of time SMs were doing useful work (not stalled).</li>
+                </ul>
+
+                <h2>NVML Telemetry (Lightweight, Always Available)</h2>
+                <p>Collected via <code>pynvml</code>, no special permissions usually needed:</p>
+
+                <h3>GPU Utilization</h3>
+                <p>How busy the GPU compute is. Windowed metric on Windows.</p>
+
+                <h3>Memory Utilization</h3>
+                <p>How busy the memory interface is.</p>
+
+                <h3>Memory Used Fraction</h3>
+                <p>VRAM currently in use / total VRAM.</p>
+
+                <h3>Temperature</h3>
+                <p>GPU core temperature in Celsius.</p>
+            </section>
+
+            <!-- Phase 0 Section -->
+            <section id="phase0" class="doc-section">
+                <h1>Phase 0: Foundational Baseline Table</h1>
+
+                <h2>Purpose</h2>
+                <p>Measure raw kernel performance across a systematic sweep of compiler knobs without profiling to establish baseline metrics. Phase 0 is fast and doesn't require special permissions or profiling tools.</p>
+
+                <h2>What Phase 0 Measures</h2>
+                <p><strong>A systematic sweep over:</strong></p>
+                <ul>
+                    <li><strong>Kernel types:</strong> GEMM (compute-heavy), Reduction (memory-bound), Softmax (mixed)</li>
+                    <li><strong>Problem sizes:</strong> 256, 512, 1024</li>
+                    <li><strong>Block sizes:</strong> 64, 128, 256 threads per block</li>
+                    <li><strong>Register caps:</strong> default (0), 32, 64</li>
+                    <li><strong>Total configurations:</strong> 3 × 3 × 3 × 3 = <strong>81 unique runs</strong></li>
+                </ul>
+                <p>Each configuration is timed multiple times, and mean/std/min/max are recorded.</p>
+
+                <h2>Why Phase 0 Matters</h2>
+                <p>Phase 0 answers three critical questions:</p>
+                <ol>
+                    <li><strong>"Do compiler knobs actually matter?"</strong> By varying register caps and block sizes, we establish whether runtime changes meaningfully.</li>
+                    <li><strong>"What are the trends?"</strong> Is GEMM faster with high register budgets? Does Reduction prefer lower registers?</li>
+                    <li><strong>"What's a good baseline?"</strong> The Phase 0 results provide a comparison point for RL (Phase 3) improvements.</li>
+                </ol>
+
+                <h2>Output: phase0_baseline.csv</h2>
+                <table class="csv-table">
+                    <tr>
+                        <th>Column</th>
+                        <th>Type</th>
+                        <th>Description</th>
+                    </tr>
+                    <tr>
+                        <td>kernel</td>
+                        <td>string</td>
+                        <td>Kernel name: gemm, reduction, softmax</td>
+                    </tr>
+                    <tr>
+                        <td>matrix_size</td>
+                        <td>int</td>
+                        <td>Problem size N (NxN for gemm/softmax, N² elements for reduction)</td>
+                    </tr>
+                    <tr>
+                        <td>block_size</td>
+                        <td>int</td>
+                        <td>Threads per block parameter</td>
+                    </tr>
+                    <tr>
+                        <td>threads_per_block</td>
+                        <td>int</td>
+                        <td>Actual launched threads per block</td>
+                    </tr>
+                    <tr>
+                        <td>reg_cap</td>
+                        <td>string/int</td>
+                        <td>Register cap setting: default, 32, 64</td>
+                    </tr>
+                    <tr>
+                        <td>actual_regs</td>
+                        <td>int</td>
+                        <td>Measured registers per thread (from compiled kernel)</td>
+                    </tr>
+                    <tr>
+                        <td>theor_occ</td>
+                        <td>float</td>
+                        <td>Theoretical occupancy (fraction [0,1])</td>
+                    </tr>
+                    <tr>
+                        <td>time_ms_mean</td>
+                        <td>float</td>
+                        <td>Mean kernel runtime (milliseconds)</td>
+                    </tr>
+                    <tr>
+                        <td>time_ms_std</td>
+                        <td>float</td>
+                        <td>Standard deviation</td>
+                    </tr>
+                    <tr>
+                        <td>time_ms_min/max</td>
+                        <td>float</td>
+                        <td>Min and max measured times</td>
+                    </tr>
+                </table>
+
+                <h2>How to Run Phase 0</h2>
+                <pre><code>python experiments/phase0_baseline_table.py</code></pre>
+
+                <h2>Expected Output</h2>
+                <ul>
+                    <li>Total configurations: 81</li>
+                    <li>Estimated time: ~3 seconds</li>
+                    <li>Pretty table showing best configs per kernel</li>
+                    <li>CSV saved to <code>results/tables/phase0_baseline.csv</code></li>
+                </ul>
+
+                <h2>Interpretation Guide</h2>
+                <p><strong>Key Insight:</strong> Theoretical occupancy (theor_occ) is <em>calculated</em> from registers and block size, but actual runtime depends on compute intensity, memory patterns, and other factors.</p>
+
+                <h3>Per-Kernel Interpretation</h3>
+                <ul>
+                    <li><strong>GEMM (compute-heavy):</strong> Best time often occurs with <em>higher register usage</em> (less spilling), even if occupancy is lower. Signal: high SM active %, low memory bandwidth.</li>
+                    <li><strong>Reduction (memory-bound):</strong> Higher occupancy often correlates with lower time. Memory bandwidth is crucial. Signal: depends on access patterns and cache hierarchy.</li>
+                    <li><strong>Softmax (mixed):</strong> Complex trade-offs; empirical results vary by matrix size and block size.</li>
+                </ul>
+
+                <h3>Why Some Rows Have Huge Timing Noise</h3>
+                <p>A few common reasons:</p>
+                <ul>
+                    <li><strong>CPU-side timing jitter on Windows:</strong> WDDM driver model can introduce delays.</li>
+                    <li><strong>Small number of repeats:</strong> With only 3 repeats, one slow outlier inflates mean and std.</li>
+                    <li><strong>Under-utilization:</strong> Very small grids underutilize GPU, so overheads dominate.</li>
+                </ul>
+                <p><strong>Sanity check:</strong> Prefer interpreting rows with small std. If noise is high, increase repeats or run on a quieter system.</p>
+            </section>
+
+            <!-- Phase 1 Section -->
+            <section id="phase1" class="doc-section">
+                <h1>Phase 1: Hardware Counters via Nsight Compute</h1>
+
+                <h2>Purpose</h2>
+                <p>Collect detailed hardware performance metrics to understand GPU behavior during kernel execution.</p>
+
+                <h2>Prerequisites</h2>
+                <ul>
+                    <li>NVIDIA Nsight Compute installed (typically with CUDA Toolkit)</li>
+                    <li>Administrator privileges on Windows (for GPU counter access)</li>
+                    <li>Phase 0 and Phase 2 tests passing</li>
+                </ul>
+
+                <h2>How to Run Phase 1</h2>
+                <p><strong>On Windows, run Command Prompt as Administrator:</strong></p>
+                <pre><code>python experiments/phase1_collect_counters.py</code></pre>
+
+                <h2>Output: phase1_result.csv</h2>
+                <p>Similar structure to Phase 0, plus hardware metrics:</p>
+                <table class="csv-table">
+                    <tr>
+                        <th>Metric</th>
+                        <th>Raw Column</th>
+                        <th>Norm Column</th>
+                        <th>Range</th>
+                    </tr>
+                    <tr>
+                        <td>Achieved Occupancy</td>
+                        <td>achieved_occupancy_raw</td>
+                        <td>achieved_occupancy_norm</td>
+                        <td>[0, 1]</td>
+                    </tr>
+                    <tr>
+                        <td>L2 Hit Rate</td>
+                        <td>l2_hit_rate_raw</td>
+                        <td>l2_hit_rate_norm</td>
+                        <td>[0, 1]</td>
+                    </tr>
+                    <tr>
+                        <td>DRAM BW %</td>
+                        <td>dram_bw_pct_raw</td>
+                        <td>dram_bw_pct_norm</td>
+                        <td>[0, 1]</td>
+                    </tr>
+                    <tr>
+                        <td>SM Active %</td>
+                        <td>sm_active_pct_raw</td>
+                        <td>sm_active_pct_norm</td>
+                        <td>[0, 1]</td>
+                    </tr>
+                </table>
+
+                <h2>Permutation Errors</h2>
+                <div class="warning-box">
+                    <strong>Permission Denied (ERR_NVGPUCTRPERM):</strong> Run as Administrator or with elevated privileges. Windows driver may still block access; try running an Administrator Command Prompt explicitly.<br><br>
+                    <strong>ncu not found:</strong> Ensure Nsight Compute CLI is installed and in PATH. Check: <code>where ncu</code>
+                </div>
+
+                <h2>Profiling Overhead</h2>
+                <p>Phase 1 is significantly slower than Phase 0 due to profiler overhead. A single configuration may take 5–30 seconds.</p>
+            </section>
+
+            <!-- Phase 2 Section -->
+            <section id="phase2" class="doc-section">
+                <h1>Phase 2: Kernel Correctness Validation</h1>
+
+                <h2>Purpose</h2>
+                <p>Ensure all kernels compute correct results before using them for performance measurement or RL training.</p>
+
+                <h2>Two-Tier Testing Strategy</h2>
+
+                <h3>Tier 1: Small Correctness Suite (default)</h3>
+                <p>Fast tests on small/edge-case sizes:</p>
+                <pre><code>pytest tests/test_kernels.py -v</code></pre>
+                <p><strong>Time:</strong> ~5–10 seconds</p>
+                <p><strong>Coverage:</strong> Boundary conditions, small matrices, various block sizes</p>
+
+                <h3>Tier 2: Performance-Scale Suite (opt-in)</h3>
+                <p>Tests on benchmark-like sizes:</p>
+                <pre><code>pytest tests/test_kernels.py -v --runslow</code></pre>
+                <p><strong>Time:</strong> ~30–60 seconds</p>
+                <p><strong>Coverage:</strong> Sizes 256–1024, realistic block-register combinations</p>
+
+                <h2>Test Coverage</h2>
+                <ul>
+                    <li><strong>GEMM Correctness:</strong> Output C matches A × B (within FP32 tolerance)</li>
+                    <li><strong>Reduction Correctness:</strong> Output matches sum(x)</li>
+                    <li><strong>Softmax Correctness:</strong> Each row sums to ~1.0, all values ≥ 0</li>
+                </ul>
+
+                <h2>Floating-Point Tolerance</h2>
+                <p>GPU results may differ slightly from CPU due to:</p>
+                <ul>
+                    <li>Different instruction order → accumulated rounding error</li>
+                    <li>Math library differences (e.g., exp, log)</li>
+                </ul>
+                <p>Tests use <code>rtol=1e-4, atol=1e-5</code> (relative and absolute tolerances).</p>
+
+                <h2>Common Issues</h2>
+                <div class="warning-box">
+                    <strong>Test fails after changing kernel:</strong> Verify the change is correct. Check one small test case manually.<br><br>
+                    <strong>NumbaPerformanceWarning:</strong> Expected for very small inputs. Does not indicate a failure.<br><br>
+                    <strong>Out of memory:</strong> Performance-scale tests with large matrices may exceed GPU memory. Reduce sizes or increase batch processing.
+                </div>
+            </section>
+
+            <!-- Phase 3 Section -->
+            <section id="phase3" class="doc-section">
+                <h1>Phase 3: RL Environment & PPO Training</h1>
+
+                <h2>Overview</h2>
+                <p>Phase 3 wraps the kernels and metrics in a Gymnasium environment for reinforcement learning, enabling automated discovery of optimal configurations.</p>
+
+                <h2>Beginner Concept: What is Reinforcement Learning?</h2>
+                <p>Reinforcement Learning (RL) is a paradigm where an <strong>agent</strong> learns by <strong>trial and error</strong>:</p>
+                <ul>
+                    <li><strong>Agent observes</strong> the current state (e.g., kernel name, previous performance metrics)</li>
+                    <li><strong>Agent takes an action</strong> (e.g., "try block_size=256, reg_cap=32")</li>
+                    <li><strong>Environment responds</strong> with a new state and a reward (e.g., speedup score)</li>
+                    <li><strong>Agent learns</strong> which actions lead to high rewards over time</li>
+                </ul>
+                <p>In this project, the "best action" is the configuration that achieves maximum speedup over the baseline.</p>
+
+                <h2>What is PPO (Proximal Policy Optimization)?</h2>
+                <p><strong>PPO</strong> is a popular RL algorithm that trains a <strong>policy network</strong> (a neural network) to predict good actions. Key advantages:</p>
+                <ul>
+                    <li><strong>Sample-efficient:</strong> Learns quickly even with limited data</li>
+                    <li><strong>Stable:</strong> Uses clipping to prevent catastrophic updates</li>
+                    <li><strong>Well-supported:</strong> Stable-Baselines3 provides industrial-strength implementation</li>
+                </ul>
+                <p>We do NOT implement PPO from scratch; we use Stable-Baselines3's vetted implementation.</p>
+
+                <h2>Environment Structure</h2>
+
+                <h3>Action Space</h3>
+                <p>Discrete actions over (block_size, reg_cap):</p>
+                <pre><code>action_space = Discrete(num_block_sizes × num_reg_caps) = Discrete(9)
+# 3 block sizes [64, 128, 256] × 3 reg caps [0, 32, 64]</code></pre>
+
+                <h3>Observation Space</h3>
+                <p>Normalized bounded vector [0, 1]. The agent observes:</p>
+                <pre><code>- Kernel one-hot: [1, 0, 0] for gemm, [0, 1, 0] for reduction, [0, 0, 1] for softmax
+- Previous action: [block_size_idx/2, reg_cap_idx/2] (normalized)
+- CUPTI metrics (if enabled): 4 values [0,1] (occupancy, L2, DRAM BW, SM active)
+- NVML metrics: 4 values [0,1] (GPU util, mem util, mem used, temp)
+Total dimension: 9 (NVML-only) or 13 (CUPTI+NVML)</code></pre>
+
+                <h4>Why These Observations?</h4>
+                <ul>
+                    <li><strong>Kernel one-hot:</strong> Different kernels respond differently to configs → agent learns kernel-specific policies</li>
+                    <li><strong>Previous action:</strong> Feedback loop: agent sees its own previous choice → learns sequences</li>
+                    <li><strong>CUPTI metrics:</strong> Hardware-level signals (rich but slow to collect)</li>
+                    <li><strong>NVML metrics:</strong> Lightweight telemetry (always available, fast)</li>
+                </ul>
+
+                <h4>Normalization for ML</h4>
+                <p>All observations are normalized to [0,1] to keep the observation space bounded and ML-friendly:</p>
+                <ul>
+                    <li><strong>Percentages (0-100%):</strong> Divided by 100 → [0,1]</li>
+                    <li><strong>Ratios:</strong> Already [0,1]</li>
+                    <li><strong>Temperature:</strong> Normalized to max ~80°C → value/80 clamped to [0,1]</li>
+                    <li><strong>Out-of-range:</strong> Clamped to [0,1] for safety</li>
+                </ul>
+
+                <h3>Reward</h3>
+                <pre><code>baseline_ms = runtime with (block_size=256, reg_cap=0)
+measured_ms = runtime with agent-chosen (block_size, reg_cap)
+speedup = baseline_ms / measured_ms
+reward = speedup - 1
+# reward > 0: faster than baseline → positive feedback
+# reward = 0: same speed as baseline
+# reward < 0: slower than baseline → negative feedback</code></pre>
+
+                <h4>Reward Examples</h4>
+                <ul>
+                    <li>If baseline is 10ms and measured is 8ms: speedup = 10/8 = 1.25 → reward = 0.25 ✓ Good!</li>
+                    <li>If baseline is 10ms and measured is 12ms: speedup = 10/12 = 0.83 → reward = -0.17 ✗ Bad!</li>
+                    <li>If baseline is 10ms and measured is 10ms: speedup = 1.0 → reward = 0.0 (neutral)</li>
+                </ul>
+
+                <h4>Why Speedup as Reward?</h4>
+                <p>This reward design has nice properties:</p>
+                <ul>
+                    <li><strong>Scale-invariant:</strong> A 10% speedup on fast kernels (0.1ms → 0.09ms) gets same reward as on slow ones (100ms → 90ms).</li>\n                    <li><strong>Intuitive:</strong> Human experts naturally think in terms of speedup, not raw milliseconds.</li>\n                    <li><strong>Bounded:</strong> Speedup is typically in realistic range (0.5x to 2x) so rewards don't explode.</li>\n                </ul>
+
+                <h2>Episode Structure</h2>
+                <ol>
+                    <li><strong>Reset:</strong> Pick random kernel + matrix size, measure baseline with (block_size=256, reg_cap=0)</li>
+                    <li><strong>Steps:</strong> Agent chooses actions for max_steps iterations</li>
+                    <li><strong>Termination:</strong> Episode ends after max_steps</li>
+                </ol>
+
+                <h2>Running Phase 3: Rollout Logging</h2>
+
+                <h3>NVML-only (Fast, No Privileges)</h3>
+                <pre><code>python phase3_rollout_log.py --use-nvml --kernels gemm reduction softmax --matrix-sizes 256 512 --episodes-per-case 1 --max-steps 10 --warmup 1 --repeats 5</code></pre>
+                <p><strong>Time:</strong> ~2–5 minutes</p>
+
+                <h3>CUPTI+NVML (Slow, Administrator Required)</h3>
+                <pre><code>python phase3_rollout_log.py --use-cupti --use-nvml --kernels gemm reduction softmax --matrix-sizes 256 512 --episodes-per-case 1 --max-steps 10 --cupti-timeout-s 180</code></pre>
+                <p><strong>Time:</strong> ~20–60 minutes</p>
+
+                <h2>Running Phase 3: PPO Training</h2>
+
+                <h3>NVML-only Training</h3>
+                <pre><code>python train_rl.py --total-steps 50000 --max-episode-len 50 --use-nvml --eval-freq 5000 --n-eval-episodes 5</code></pre>
+                <p><strong>Time:</strong> ~15–30 minutes</p>
+
+                <h3>CUPTI+NVML Training</h3>
+                <pre><code>python train_rl.py --total-steps 50000 --max-episode-len 30 --use-cupti --use-nvml --cupti-timeout-s 180</code></pre>
+                <p><strong>Time:</strong> ~2–8 hours</p>
+
+                <h2>Key PPO Hyperparameters</h2>
+                <table class="csv-table">
+                    <tr>
+                        <th>Parameter</th>
+                        <th>Default</th>
+                        <th>Typical Range</th>
+                        <th>Effect</th>
+                    </tr>
+                    <tr>
+                        <td>--total-steps</td>
+                        <td>100000</td>
+                        <td>10k–100k</td>
+                        <td>More steps = longer training, better convergence</td>
+                    </tr>
+                    <tr>
+                        <td>--batch-size</td>
+                        <td>2048</td>
+                        <td>1024–4096</td>
+                        <td>Larger = more stable, more memory</td>
+                    </tr>
+                    <tr>
+                        <td>--learning-rate</td>
+                        <td>3e-4</td>
+                        <td>1e-4–1e-3</td>
+                        <td>Higher = faster but unstable</td>
+                    </tr>
+                    <tr>
+                        <td>--n-epochs</td>
+                        <td>10</td>
+                        <td>5–20</td>
+                        <td>More epochs = more optimization per batch</td>
+                    </tr>
+                    <tr>
+                        <td>--gamma</td>
+                        <td>0.99</td>
+                        <td>0.95–0.999</td>
+                        <td>Discount factor; how much future matters</td>
+                    </tr>
+                    <tr>
+                        <td>--clip-range</td>
+                        <td>0.2</td>
+                        <td>0.1–0.3</td>
+                        <td>PPO clipping; smaller = conservative</td>
+                    </tr>
+                </table>
+
+                <h2>Training Artifacts</h2>
+                <ul>
+                    <li><code>results/models/ppo_final.zip</code> — Final trained policy</li>
+                    <li><code>results/models/best/best_model.zip</code> — Best policy (if eval enabled)</li>
+                    <li><code>results/models/ppo_checkpoint_*.zip</code> — Periodic checkpoints</li>
+                    <li><code>results/logs/train_rl.log</code> — Training log</li>
+                    <li><code>results/logs/training_summary.json</code> — Hyperparameters and paths</li>
+                    <li><code>results/logs/tensorboard/</code> — TensorBoard events (run: <code>tensorboard --logdir=results/logs/tensorboard</code>)</li>
+                </ul>
+
+                <h2>NVML-only vs CUPTI+NVML Training: Which Should You Use?</h2>
+                <table class="csv-table">
+                    <tr>
+                        <th>Aspect</th>
+                        <th>NVML-only</th>
+                        <th>CUPTI+NVML</th>
+                    </tr>
+                    <tr>
+                        <td><strong>Training Time (50k steps)</strong></td>
+                        <td>15–30 min</td>
+                        <td>2–8 hours</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Requires Admin?</strong></td>
+                        <td>No</td>
+                        <td>Yes (usually)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Observation Dimension</strong></td>
+                        <td>9 (lightweight)</td>
+                        <td>13 (rich signals)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Policy Quality</strong></td>
+                        <td>Good (basic heuristics)</td>
+                        <td>Better (hardware-aware)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Use Case</strong></td>\n                        <td>Development, iteration, quick experiments</td>\n                        <td>Production, publication, final results</td>\n                    </tr>\n                    <tr>\n                        <td><strong>NVML Signal Quality</strong></td>\n                        <td>Decent (util, temp, memory)</td>\n                        <td>Same, plus detailed hardware counters</td>\n                    </tr>\n                </table>\n\n                <h3>Recommendation</h3>\n                <ul>\n                    <li><strong>First time / developing?</strong> Start with <code>--use-nvml</code>. Fast iteration, no admin needed.</li>\n                    <li><strong>Got good results?</strong> Run again with <code>--use-cupti --use-nvml</code> for publication-quality results.</li>\n                    <li><strong>On Windows and hitting admin issues?</strong> Stick with NVML-only; results are still valid.</li>\n                </ul>\n\n                <h3>NVML Signal Limitations</h3>\n                <p>On Windows (WDDM driver model), NVML metrics have a few quirks:</p>\n                <ul>\n                    <li><strong>GPU utilization is windowed (~100ms):</strong> Very short kernels may show 0% even if they ran.</li>\n                    <li><strong>Memory utilization can be bursty.</strong></li>\n                    <li><strong>Temperature is updated slowly.</strong></li>\n                </ul>\n                <p><strong>Workaround:</strong> CUPTI metrics (achieved occupancy, L2 hit rate, DRAM BW, SM active %) are more fine-grained and accurate during training. But NVML-only training still produces useful policies.</p>
+            </section>
+
+            <!-- Output Artifacts Section -->
+            <section id="artifacts" class="doc-section">
+                <h1>Output Artifacts & CSV Schemas</h1>
+
+                <h2>Phase 0: phase0_baseline.csv</h2>
+                <p>Row per configuration. Columns: kernel, matrix_size, block_size, threads_per_block, reg_cap, est_regs, actual_regs, theor_occ, time_ms_mean, time_ms_std, time_ms_min, time_ms_max, [achieved_occ (optional)]</p>
+
+                <h2>Phase 1: phase1_result.csv</h2>
+                <p>Similar to Phase 0, plus metric columns:</p>
+                <ul>
+                    <li>ok (bool): success</li>
+                    <li>reason (string): error reason</li>
+                    <li>{metric}_raw, {metric}_norm for achieved_occupancy, l2_hit_rate, dram_bw_pct, sm_active_pct</li>
+                </ul>
+
+                <h2>Phase 3: phase3_rollout.csv (step-level)</h2>
+                <p>Row per environment step:</p>
+                <ul>
+                    <li>episode_id, episode_seed, step</li>
+                    <li>kernel, matrix_size, block_size, reg_cap</li>
+                    <li>time_ms, baseline_ms, speedup, reward</li>
+                    <li>cupti_ok, cupti_reason</li>
+                    <li>cupti_{metric}_norm (if enabled)</li>
+                    <li>nvml_{metric}_norm (if enabled)</li>
+                </ul>
+
+                <h2>Phase 3: phase3_episode_summary.csv (episode-level)</h2>
+                <p>Row per episode:</p>
+                <ul>
+                    <li>episode_id, episode_seed, kernel, matrix_size</li>
+                    <li>max_steps, use_cupti, use_nvml</li>
+                    <li>baseline_ms, mean_time_ms, mean_reward</li>
+                    <li>best_speedup, best_reward, steps</li>
+                </ul>
+            </section>
+
+            <!-- Results Interpretation -->
+            <section id="results" class="doc-section">
+                <h1>Interpreting Results</h1>
+
+                <h2>Phase 0 Analysis</h2>
+                <p>Basic sanity checks:</p>
+                <ul>
+                    <li>All rows should have positive time_ms values</li>
+                    <li>Std should be small relative to mean (low timing jitter)</li>
+                    <li>Theoretical occupancy should match pattern with register usage</li>
+                </ul>
+                <p><strong>Python snippet:</strong></p>
+                <pre><code>import pandas as pd
+df = pd.read_csv('results/tables/phase0_baseline.csv')
+best = df.loc[df.groupby('kernel')['time_ms_mean'].idxmin()]
+print(best[['kernel', 'matrix_size', 'block_size', 'reg_cap', 'time_ms_mean']])</code></pre>
+
+                <h2>Phase 1 Analysis</h2>
+                <p>Correlate metrics with performance:</p>
+                <ul>
+                    <li>High DRAM BW + Low L2 hit rate → memory-bound config</li>
+                    <li>High occupancy + Low SM active → might be memory stalled</li>
+                    <li>Low occupancy + High SM active → likely register-constrained</li>
+                </ul>
+
+                <h2>Phase 3 Results Interpretation</h2>
+                <p><strong>Best config per kernel:</strong></p>
+                <pre><code>import pandas as pd
+df = pd.read_csv('results/tables/phase3_rollout.csv')
+best = df.loc[df.groupby('kernel')['speedup'].idxmax()]
+print(best[['kernel', 'matrix_size', 'block_size', 'reg_cap', 'speedup']])</code></pre>
+
+                <p><strong>Learning curves:</strong></p>
+                <pre><code>import matplotlib.pyplot as plt
+episode_df = pd.read_csv('results/tables/phase3_episode_summary.csv')
+plt.plot(episode_df['episode_id'], episode_df['best_speedup'], 'o-')
+plt.xlabel('Episode')
+plt.ylabel('Best Speedup')
+plt.title('PPO Training Progress')
+plt.show()</code></pre>
+
+                <h2>Common Gotchas</h2>
+                <div class="warning-box">
+                    <strong>Very small speedups on small matrices:</strong> Kernels on small matrices severely underutilize GPU; overhead dominates. Focus on medium sizes (256+).<br><br>
+                    <strong>High noise in timing:</strong> GPU timing can be jittery on Windows. Increase repeats in config or run multiple times.<br><br>
+                    <strong>NVML util columns are 0:</strong> On Windows, NVML utilization is windowed. With short kernels, it often reads 0. See CUPTI metrics for actual utilization.
+                </div>
+            </section>
+
+            <!-- Kernels Section -->
+            <section id="kernels" class="doc-section">
+                <h1>Kernel Implementations</h1>
+
+                <h2>GEMM (General Matrix Multiplication)</h2>
+                <p><strong>File:</strong> <code>kernels/gemm.py</code></p>
+                <p><strong>Compute Pattern:</strong> Tiled matrix multiplication using shared memory blocking.</p>
+                <ul>
+                    <li><strong>Workload:</strong> Multiplies two NxN matrices → compute-heavy</li>
+                    <li><strong>Compute Intensity:</strong> High (O(N³) operations, O(N²) memory)</li>
+                    <li><strong>Typical Behavior:</strong> Benefits from large register budgets and higher occupancy</li>
+                    <li><strong>Block sizes:</strong> 64, 128, 256 (TILE parameter)</li>
+                </ul>
+
+                <h2>Reduction</h2>
+                <p><strong>File:</strong> <code>kernels/reduction.py</code></p>
+                <p><strong>Compute Pattern:</strong> Parallel sum reduction with block-level synchronization.</p>
+                <ul>
+                    <li><strong>Workload:</strong> Sums N² elements into a single output – memory-bound</li>
+                    <li><strong>Compute Intensity:</strong> Low (O(N²) operations, O(N²) memory)</li>
+                    <li><strong>Typical Behavior:</strong> Sensitive to occupancy; lower register usage helps</li>
+                    <li><strong>Block sizes:</strong> 64, 128, 256</li>
+                </ul>
+
+                <h2>Softmax</h2>
+                <p><strong>File:</strong> <code>kernels/softmax.py</code></p>
+                <p><strong>Compute Pattern:</strong> Row-wise softmax: exp, normalization, log. Reduces NxN matrix row-by-row.</p>
+                <ul>
+                    <li><strong>Workload:</strong> Mixed compute + memory</li>
+                    <li><strong>Compute Intensity:</strong> Medium (transcendental math, but memory-light per row)</li>
+                    <li><strong>Typical Behavior:</strong> Complex trade-offs; varies by size and config</li>
+                    <li><strong>Block sizes:</strong> 64, 128, 256</li>
+                </ul>
+            </section>
+
+            <!-- Profiling Section -->
+            <section id="profiling" class="doc-section">
+                <h1>Profiling & Metrics Collection</h1>
+
+                <h2>CUDA Event Timing</h2>
+                <p>Kernel execution timing via NVIDIA CUDA events:</p>
+                <pre><code>start = cuda.event()
+stop = cuda.event()
+start.record()
+kernel[grid, block](*args)
+stop.record()
+stop.synchronize()
+elapsed_ms = start.time_till(stop)</code></pre>
+                <p><strong>Accuracy:</strong> Sub-microsecond on recent GPUs. Repeating and averaging stabilizes results.</p>
+
+                <h2>CUPTI Collection</h2>
+                <p>Nsight Compute CLI invoked via subprocess:</p>
+                <pre><code>ncu --set full [--metrics specific_metrics] python run_kernel.py</code></pre>
+                <p><strong>Overhead:</strong> Significant (5–30 seconds per kernel).</p>
+                <p><strong>Timeout handling:</strong> If ncu hangs, subprocess terminates after --cupti-timeout-s seconds.</p>
+
+                <h2>NVML Sampling</h2>
+                <p>Lightweight GPU telemetry via pynvml:</p>
+                <pre><code>from pynvml import nvml...
+util, mem_util = nvmlDeviceGetUtilizationRates(device)
+mem_used = nvmlDeviceGetMemoryInfo(device).used
+temp = nvmlDeviceGetTemperature(device, SENSOR_CORE)</code></pre>
+                <p><strong>Timing:</strong> Sub-millisecond. NVML util is windowed on some drivers.</p>
+
+                <h2>Windows-Specific Considerations</h2>
+                <div class="warning-box">
+                    <strong>WDDM driver model:</strong> Windows uses WDDM (Windows Display Driver Model), which may delay counter collection and introduce batching delays for short kernels.<br><br>
+                    <strong>NVML utilization windowing:</strong> NVML reports utilization over a coarse window (~100ms). Short kernels often show 0% util even if they ran. Solution: Enable CUPTI for accurate utilization, or use sm_active_pct counter.<br><br>
+                    <strong>Administrator requirements:</strong> GPU counter access may require elevated privileges. Always try running in Administrator Command Prompt if counters fail.
+                </div>
+            </section>
+
+            <!-- Configuration Section -->
+            <section id="configuration" class="doc-section">
+                <h1>Configuration & Customization</h1>
+
+                <h2>Adjusting Problem Sizes</h2>
+                <p>To test different matrix sizes, edit the sweep configuration in experiment scripts or pass arguments:</p>
+                <pre><code>python phase3_rollout_log.py --matrix-sizes 128 256 512 1024 --kernels gemm softmax</code></pre>
+
+                <h2>Modifying Knob Values</h2>
+                <p><strong>Block sizes:</strong> Edit <code>environment/action_space.py</code></p>
+                <pre><code>BLOCK_SIZES = [64, 128, 256, 512]  # Add or remove sizes</code></pre>
+
+                <p><strong>Register caps:</strong> Edit <code>environment/action_space.py</code></p>
+                <pre><code>REG_CAPS = [0, 16, 32, 48, 64]  # Add more granular caps</code></pre>
+
+                <h2>Tuning PPO Training</h2>
+                <p>See Phase 3 documentation for detailed hyperparameter tuning. Start with defaults, then adjust learning_rate or n_epochs if convergence is slow.</p>
+
+                <h2>Running on Different GPUs</h2>
+                <p>Most changes are automatic (occupancy formulae adapt to sm_version). However, verify:</p>
+                <ul>
+                    <li>GPU memory sufficient for batch sizes</li>
+                    <li>Compute capability ≥ 6.0 (modern NVIDIA)</li>
+                    <li>CUDA/Numba support for the GPU architecture</li>
+                </ul>
+            </section>
+
+            <!-- API Reference -->
+            <section id="api" class="doc-section">
+                <h1>API Reference</h1>
+
+                <h2>KernelOptimizationEnv</h2>
+                <pre><code>from environment.kernel_env import KernelOptimizationEnv, EpisodeConfig
+
+cfg = EpisodeConfig(
+    kernel_name="gemm",          # or "random"
+    matrix_size=512,
+    max_steps=50,
+    use_cupti=False,
+    use_nvml=True,
+    cupti_timeout_s=120
+)
+
+env = KernelOptimizationEnv(cfg)
+obs, info = env.reset(seed=0)
+
+for _ in range(10):
+    action = env.action_space.sample()  # Random action
+    obs, reward, terminated, truncated, info = env.step(action)
+    if terminated or truncated:
+        break</code></pre>
+
+                <h2>PPO Training</h2>
+                <pre><code>from stable_baselines3 import PPO
+
+# Load environment
+env = KernelOptimizationEnv(cfg)
+
+# Create and train agent
+model = PPO("MlpPolicy", env, learning_rate=3e-4, device="cuda")
+model.learn(total_timesteps=50000, progress_bar=True)
+
+# Save
+model.save("models/ppo_trained")
+
+# Load and use
+loaded_model = PPO.load("models/ppo_trained")
+obs, _ = env.reset()
+action, _ = loaded_model.predict(obs, deterministic=True)
+obs, reward, _, _, _ = env.step(action)</code></pre>
+
+                <h2>Metric Dictionaries</h2>
+                <pre><code>from profiling.cupti_collector import DEFAULT_NCU_METRICS
+
+# Predefined CUPTI metrics
+metrics = {
+    "achieved_occupancy": DEFAULT_NCU_METRICS["achieved_occupancy"],
+    "l2_hit_rate": DEFAULT_NCU_METRICS["l2_hit_rate"],
+    "dram_bw_pct": DEFAULT_NCU_METRICS["dram_bw_pct"],
+    "sm_active_pct": DEFAULT_NCU_METRICS["sm_active_pct"],
+}</code></pre>
+            </section>
+
+            <!-- Troubleshooting Section -->
+            <section id="troubleshooting" class="doc-section">
+                <h1>Troubleshooting</h1>
+
+                <h2>CUDA Errors</h2>
+                <div class="warning-box">
+                    <strong>CUDA out of memory:</strong> Reduce batch_size, matrix_size, or max_episode_len. Check available GPU memory with nvidia-smi.<br><br>
+                    <strong>Numba compilation error:</strong> Ensure CUDA drivers are up-to-date. Try reinstalling Numba: <code>pip install --upgrade numba</code><br><br>
+                    <strong>CUDA not available:</strong> Run <code>python check_cuda.py</code> to diagnose. Reinstall PyTorch with CUDA support if needed.
+                </div>
+
+                <h2>Profiling Errors</h2>
+                <div class="warning-box">
+                    <strong>ERR_NVGPUCTRPERM:</strong> GPU counters blocked. Run Command Prompt as Administrator on Windows.<br><br>
+                    <strong>ncu timeout:</strong> Increase --cupti-timeout-s or check if ncu is installed: <code>where ncu</code><br><br>
+                    <strong>No metrics parsed:</strong> Some metrics may not be supported on your GPU/driver. Fall back to alternatives.
+                </div>
+
+                <h2>Training Issues</h2>
+                <div class="warning-box">
+                    <strong>Mean reward not increasing:</strong> Try lowering learning_rate or increasing n_epochs. Ensure observation space contains meaningful signal (check NVML/CUPTI data).<br><br>
+                    <strong>Training crashes:</strong> Check memory usage. Reduce batch_size or use --use-nvml (skip CUPTI) for faster, less memory-intensive training.<br><br>
+                    <strong>GPU not used by PyTorch:</strong> Run <code>python check_cuda.py</code>. If CUDA is not available to PyTorch, reinstall with CUDA support: <code>conda install pytorch pytorch-cuda=12.1 -c pytorch -c nvidia</code>
+                </div>
+
+                <h2>Windows-Specific</h2>
+                <div class="warning-box">
+                    <strong>Weird characters in terminal:</strong> Run: <code>chcp 65001>nul</code> before scripts (UTF-8 encoding).<br><br>
+                    <strong>Command not found:</strong> Ensure conda environment is activated: <code>conda activate gpu-jit-opt</code><br><br>
+                    <strong>Long compilation times:</strong> Numba CUDA compilation can be slow on first run. Subsequent runs use cache.
+                </div>
+            </section>
+
+            <!-- Developer Section -->
+            <section id="developer" class="doc-section">
+                <h1>Developer Information</h1>
+
+                <h2>Project Structure</h2>
+                <pre><code>├── kernels/              # CUDA kernels (GEMM, Reduction, Softmax)
+├── profiling/            # Metric collection (CUPTI, NVML, timing)
+├── environment/          # Gymnasium environment and RL components
+├── training/             # PPO training entry point
+├── models/               # Neural network policies
+├── experiments/          # Phase implementations (Phase 0–3)
+├── tests/                # Correctness and smoke tests
+├── results/              # Output artifacts (CSV, models, logs)
+└── docs/                 # This documentation</code></pre>
+
+                <h2>Contributing</h2>
+                <p>To contribute improvements:</p>
+                <ol>
+                    <li>Maintain all existing tests passing</li>
+                    <li>Add tests for new functionality</li>
+                    <li>Update documentation for user-facing changes</li>
+                    <li>Follow PEP 8 style guide</li>
+                    <li>Do not modify kernel implementations without explicit approval (ask maintainer)</li>
+                </ol>
+
+                <h2>Development Workflow</h2>
+                <ol>
+                    <li>Create a feature branch</li>
+                    <li>Run all tests: <code>pytest tests/ -v</code></li>
+                    <li>Run Phase 0/3 smoke tests to ensure no regressions</li>
+                    <li>Submit pull request with detailed description</li>
+                </ol>
+
+                <h2>Performance Tips</h2>
+                <ul>
+                    <li>Use NVML-only mode during development (fast iteration)</li>
+                    <li>Profile with CUPTI sparingly (very slow)</li>
+                    <li>Cache compiled Numba kernels to speed up repeated runs</li>
+                    <li>Test changes on small problem sizes first</li>
+                </ul>
+
+                <hr>
+
+                <h2>Developer Card</h2>
+                <div class="developer-card">
+                    <h3>Sanchit Nipanikar</h3>
+                    <p class="developer-title">Project Author & Maintainer</p>
+                    <div class="developer-links">
+                        <a href="https://www.linkedin.com/in/sanchit1606" target="_blank" class="dev-link">
+                            <span class="link-icon">in</span> LinkedIn
+                        </a>
+                        <a href="https://github.com/sanchit1606" target="_blank" class="dev-link">
+                            <span class="link-icon">gh</span> GitHub
+                        </a>
+                    </div>
+                    <p class="developer-bio">Passionate about GPU optimization, reinforcement learning, and systems engineering. Exploring the intersection of compiler design and machine learning for automated performance tuning.</p>
+                </div>
+
+                <h2>Acknowledgments</h2>
+                <p>Built with NVIDIA Nsight Compute, Numba CUDA, Gymnasium, and Stable-Baselines3.</p>
+            </section>
+
+        </main>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
