@@ -173,12 +173,6 @@ pytest tests/ --cov=. --cov-report=html
 5. **Train agent** → `training/train_rl.py`
 6. **Evaluate** → `experiments/phase2_rl_baseline.py`
 
-## Documentation
-
-- See `implementation-plan.md` for detailed 2000-line implementation guide
-- Phase 0 is the foundational experiment — start here
-- Each phase builds on the previous one
-
 ## Troubleshooting
 
 ### Conda activation prints Visual Studio 2019 errors
