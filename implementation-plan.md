@@ -1209,10 +1209,13 @@ Non-objectives (for the initial Phase 3 prototype):
 - Learning a shared-memory / unroll-factor action space before the baseline `(block_size, reg_cap)` loop is stable.
 - Maximizing training throughput (profiling-enabled training will be slow; focus on correctness first).
 
-Definition of Done:
+Definition of Done (Phase 3 core):
 - A `gymnasium.Env` implementation exists with correct `reset()` / `step()` semantics.
 - `reset()` measures a baseline time, and `step()` returns `(obs, reward, terminated, truncated, info)` with reward correlated to measured speedup.
 - A smoke test can run locally without requiring CUPTI permissions.
+- Optional Phase 3 extension (PPO training):
+  - A PPO training entry point using stable_baselines3 is available.
+  - Training produces checkpoints, logs, and a summary JSON.
 
 ### 6.1 `environment/kernel_env.py`
 
@@ -1319,7 +1322,30 @@ Run (CUPTI + NVML — slower; may need Administrator):
 cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stack" && conda activate gpu-jit-opt && python experiments\phase3_rollout_log.py --episodes-per-case 3 --max-steps 10 --matrix-sizes 64 --use-nvml --use-cupti --cupti-timeout-s 180
 ```
 
-### 6.3 Phase 3 CSV Schema (Column Meanings)
+### 6.3 `training/train_rl.py` and `train_rl.py` (PPO Training Entry Point)
+
+**Purpose**: Train a PPO agent on `KernelOptimizationEnv` with Stable-Baselines3.
+
+**Features**:
+- Configurable PPO hyperparameters (learning rate, epochs, gamma, etc.)
+- Optional evaluation environment with periodic checkpointing.
+- Tensorboard logging for monitoring training.
+- JSON summary artifact (`results/logs/training_summary.json`) with final artifact paths.
+
+**Example (NVML-only, fast)**:
+
+```bash
+cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stack" && conda activate gpu-jit-opt && python train_rl.py --total-steps 50000 --max-episode-len 50 --use-nvml --eval-freq 5000 --n-eval-episodes 5
+```
+
+**Outputs**:
+- `results/models/ppo_final.zip` (trained policy)
+- `results/models/best/best_model.zip` (best checkpoint if eval enabled)
+- `results/models/ppo_checkpoint_*.zip` (periodic checkpoints)
+- `results/logs/train_rl.log` (training log)
+- `results/logs/training_summary.json` (hyperparameters + paths)
+
+### 6.4 Phase 3 CSV Schema (Column Meanings)
 
 #### `results/tables/phase3_rollout.csv` (step-level)
 
@@ -1355,6 +1381,10 @@ NVML telemetry columns (normalized):
 - `nvml_mem_util_norm`: memory interface utilization fraction (0..1).
 - `nvml_mem_used_frac`: VRAM used fraction (0..1).
 - `nvml_temp_norm`: temperature / 100 (roughly 0..1).
+
+Windows sampling note:
+- With `--use-cupti`, NVML utilization columns are logged as the **peak** observed while the `ncu` subprocess runs (more reliable for short kernels).
+- Without `--use-cupti`, NVML utilization is a best-effort instantaneous sample near the step.
 
 #### `results/tables/phase3_episode_summary.csv` (episode-level)
 

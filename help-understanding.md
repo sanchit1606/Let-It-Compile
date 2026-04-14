@@ -727,13 +727,13 @@ Each row corresponds to **one environment step** (one attempt at a kernel config
 - `speedup` (float): computed as:
 
    $$
-   	ext{speedup} = \frac{\text{baseline\_ms}}{\text{time\_ms}}
+		ext{speedup} = \frac{\text{baseline\_ms}}{\text{time\_ms}}
    $$
 
 - `reward` (float): RL reward computed as:
 
    $$
-   	ext{reward} = \text{speedup} - 1
+		ext{reward} = \text{speedup} - 1
    $$
 
 Interpretation:
@@ -761,6 +761,10 @@ If NVML is enabled, these columns reflect lightweight device telemetry sampled a
 - `nvml_mem_util_norm`: memory interface utilization fraction (0–1).
 - `nvml_mem_used_frac`: VRAM used fraction (0–1).
 - `nvml_temp_norm`: temperature normalized by 100 (roughly 0–1).
+
+Important note on Windows sampling:
+- If you run with `--use-cupti`, NVML utilization is collected as a **peak** while the `ncu` subprocess is running (this is more reliable for short kernels).
+- If you run NVML-only (no `--use-cupti`), utilization reflects a best-effort instantaneous NVML sample near the step.
 
 ---
 
@@ -791,9 +795,68 @@ Important practical note:
 - Very small sizes (like `matrix_size=64`) often show noisy/odd speedups due to underutilization and overheads.
 - For paper-quality plots/tables, prefer larger sizes (e.g., 256/512/1024) and higher repeats.
 
-Add later phases here using the same structure:
-- goal
-- how to run
+---
+
+## Phase 3 Training (Optional: PPO with Stable-Baselines3)
+
+After validating the environment with `phase3_rollout_log.py`, you can optionally train a PPO agent to learn an optimization policy.
+
+### How to run PPO training (fast mode, NVML only)
+
+On Windows CMD (estimated 1–5 hours depending on `--total-steps`):
+
+```bash
+cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stack" && conda activate gpu-jit-opt && python train_rl.py --total-steps 50000 --max-episode-len 50 --eval-freq 5000 --n-eval-episodes 5 --use-nvml
+```
+
+### How to run PPO training (with CUPTI metrics, slower)
+
+Requires Administrator terminal on Windows:
+
+```bash
+cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stack" && conda activate gpu-jit-opt && python train_rl.py --total-steps 50000 --max-episode-len 30 --use-cupti --use-nvml --cupti-timeout-s 180
+```
+
+### Expected training output
+
+```
+[2026-04-14 12:00:00] train_rl - INFO - ====================================
+[2026-04-14 12:00:00] train_rl - INFO - Phase 3: PPO Training (Stable-Baselines3)
+[2026-04-14 12:00:00] train_rl - INFO - Total steps: 50000
+[phase3] Creating training environment...
+
+Step: 1000 / 50000
+Step: 2000 / 50000
+...
+Training complete. Saving final model...
+Training summary saved to results/logs/training_summary.json
+```
+
+### Training artifacts
+
+After training completes:
+- **Final model**: `results/models/ppo_final.zip` — trained policy (can be loaded with `PPO.load()`)
+- **Best model** (if eval enabled): `results/models/best/best_model.zip` — highest validation reward
+- **Checkpoints**: `results/models/ppo_checkpoint_*.zip` — periodic snapshots during training
+- **Training log**: `results/logs/train_rl.log` — detailed logging output
+- **Summary**: `results/logs/training_summary.json` — hyperparameters + artifact paths
+- **TensorBoard logs**: `results/logs/tensorboard/` — real-time plot visualization (run `tensorboard --logdir=results/logs/tensorboard/`)
+
+### PPO Training Configuration
+
+Key command-line arguments (see `python train_rl.py --help` for full list):
+
+- `--total-steps NUM`: Total environment steps to train on (default: 100000). Larger = longer training.
+- `--batch-size NUM`: Steps collected per gradient update (default: 2048). Larger batches = more stable updates.
+- `--max-episode-len NUM`: Max steps per episode (default: 50). Limits episode length to control variance.
+- `--learning-rate LR`: PPO learning rate (default: 3e-4). Lower = slower but more stable.
+- `--n-epochs N`: Gradient update epochs per batch (default: 10). Higher = more optimization per sample.
+- `--gamma GAMMA`: Discount factor (default: 0.99). How much future rewards matter.
+- `--clip-range CLIP`: PPO clipping range (default: 0.2). Smaller = conservative updates.
+- `--eval-freq FREQ`: Evaluate every N steps (optional; no eval if not set).
+- `--n-eval-episodes N`: Number of eval episodes per evaluation (optional).
+- `--use-cupti`: Enable CUPTI metrics (slow; may need admin).
+- `--use-nvml`: Enable NVML telemetry (default: on, fast).
 - expected terminal output
 - what each column means
 - common gotchas
