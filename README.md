@@ -213,22 +213,3 @@ Optional for prototype. System-installed `ncu` is at:
 ```
 C:\Program Files\NVIDIA\Nsight Compute 202x.x\ncu.exe
 ```
-
-## Paper & References
-
-- **CuAsmRL:** RL for GPU assembly optimization (26% speedup)
-- **Roofline Model:** Performance analysis (RTX 3050 Ti ridge ≈ 40.6 FLOP/byte)
-- **CUDA Occupancy Calculator:** Theoretical occupancy computation
-
-## License
-
-Apache 2.0
-
-## Contact
-
-For questions or issues, refer to `implementation-plan.md` or check the troubleshooting section.
-
----
-
-**Last Updated:** April 2, 2026  
-**Status:** Phase 0 complete; ready for Phase 1+
