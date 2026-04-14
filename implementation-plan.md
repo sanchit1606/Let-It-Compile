@@ -1217,225 +1217,156 @@ Definition of Done:
 ### 6.1 `environment/kernel_env.py`
 
 ```python
-"""
-Gymnasium environment for CUDA kernel optimization.
+from __future__ import annotations
 
-The agent takes actions (block_size, reg_cap, shared_mem)
-and receives rewards based on measured kernel speedup relative to baseline.
-
-State:
-    [cupti_vector(5), nvml_vector(4), kernel_type_onehot(3), prev_action(4)]
-    Total: 16 dimensions
-
-Action:
-    Discrete MultiDiscrete:
-    [block_size_idx, reg_cap_idx, shared_mem_idx, unroll_idx]
-
-    block_size options:  [64, 128, 256, 512]               (4 choices)
-    reg_cap options:     [0, 16, 24, 32, 40, 48, 64, 128]  (8 choices, 0=default)
-    shared_mem options:  [0, 8192, 16384, 32768, 49152]    (5 choices, bytes)
-    unroll options:      [1, 2, 4, 8]                       (4 choices)
-"""
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
 
 import gymnasium as gym
 import numpy as np
-from gymnasium import spaces
-from dataclasses import dataclass
-from typing import Optional, Tuple, Any, Dict
 
-from profiling.cupti_collector import CUPTICollector
-from profiling.nvml_monitor import NVMLMonitor
-from profiling.cuda_timer import time_kernel
-from compiler.ptxas_controller import PTXASController
-from kernels.gemm import run_gemm
-from kernels.reduction import run_reduction
-
-
-# ── Action space configuration ───────────────────────────────────────
-BLOCK_SIZES  = [64, 128, 256, 512]
-REG_CAPS     = [0, 16, 24, 32, 40, 48, 64, 128]  # 0 = PTXAS default (no cap)
-SHARED_MEMS  = [0, 8192, 16384, 32768, 49152]     # bytes
-UNROLL_FACTS = [1, 2, 4, 8]
-
-KERNEL_NAMES = ["gemm", "reduction", "softmax"]
-
-# State dimension
-STATE_DIM = 5 + 4 + len(KERNEL_NAMES) + 4  # cupti + nvml + onehot + prev_action
-ACTION_DIM = [len(BLOCK_SIZES), len(REG_CAPS), len(SHARED_MEMS), len(UNROLL_FACTS)]
+from environment.action_space import decode_action, make_action_space
+from environment.reward import speedup_reward
+from environment.state_space import ObservationSpec, build_observation, make_observation_space
+from profiling.cupti_collector import CUPTICollector, DEFAULT_NCU_METRICS, default_state_vector
 
 
 @dataclass
 class EpisodeConfig:
-    kernel_name: str = "gemm"
+    kernel_name: str = "gemm"  # gemm | reduction | softmax | random
     matrix_size: int = 512
-    max_steps: int = 50
+    max_steps: int = 20
+
+    warmup: int = 1
+    repeats: int = 5
+
+    # Observation sources
+    use_cupti: bool = False  # Nsight Compute (ncu) metrics (slow; may need Admin on Windows)
+    use_nvml: bool = True    # lightweight telemetry (works without counter permissions)
+
+    cupti_timeout_s: int = 120
 
 
 class KernelOptimizationEnv(gym.Env):
-    """
-    Gymnasium environment for RL-guided CUDA kernel optimization.
+        """Phase 3 Gym environment.
 
-    Each episode optimizes one kernel instance (fixed kernel_name + matrix_size).
-    The agent tries different configurations (actions) and receives reward
-    proportional to speedup over the PTXAS default configuration.
+        Action:
+            - spaces.MultiDiscrete([len(BLOCK_SIZES), len(REG_CAPS)])
+            - decoded into (block_size, reg_cap) via environment/action_space.py
 
-    Episode structure:
-      1. Compile and run kernel with PTXAS default → baseline_time
-      2. For each step:
-         a. Agent selects action (block_size_idx, reg_cap_idx, ...)
-         b. Kernel compiled+run with that config → step_time
-         c. Reward = (baseline_time - step_time) / baseline_time  (speedup fraction)
-         d. State updated with new CUPTI counters
-      3. Episode ends after max_steps
-    """
+        Observation (normalized/clamped to [0,1]):
+            - CUPTI vector (4 keys): achieved_occupancy, l2_hit_rate, dram_bw_pct, sm_active_pct
+            - NVML vector (4 values): gpu_util, mem_util, mem_used_frac, temp_norm
+            - kernel one-hot (3)
+            - prev_action (2)
 
-    metadata = {"render_modes": []}
-
-    def __init__(self, config: EpisodeConfig = None, render_mode=None):
-        super().__init__()
-        self.config = config or EpisodeConfig()
-
-        # Spaces
-        self.observation_space = spaces.Box(
-            low=0.0, high=1.0,
-            shape=(STATE_DIM,),
-            dtype=np.float32
-        )
-        self.action_space = spaces.MultiDiscrete(ACTION_DIM)
-
-        # Components
-        self.cupti    = CUPTICollector()
-        self.nvml     = NVMLMonitor()
-        self.ptxas    = PTXASController()
-
-        # Episode state
-        self._baseline_time: Optional[float] = None
-        self._step_count: int = 0
-        self._prev_action = np.zeros(4, dtype=np.float32)
-        self._best_speedup: float = 0.0
-
-    def reset(self, *, seed=None, options=None) -> Tuple[np.ndarray, Dict]:
-        super().reset(seed=seed)
-        self._step_count = 0
-        self._prev_action = np.zeros(4, dtype=np.float32)
-        self._best_speedup = 0.0
-
-        # Measure baseline: PTXAS defaults, block_size=256
-        self._baseline_time = self._measure_kernel(
-            block_size=256, reg_cap=0, shared_mem=0, unroll=1
-        ).mean_ms
-
-        obs = self._build_obs()
-        return obs, {}
-
-    def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
-        self._step_count += 1
-
-        # Decode action
-        block_size  = BLOCK_SIZES[action[0]]
-        reg_cap     = REG_CAPS[action[1]]
-        shared_mem  = SHARED_MEMS[action[2]]
-        unroll      = UNROLL_FACTS[action[3]]
-
-        # Run kernel with this configuration
-        timing = self._measure_kernel(block_size, reg_cap, shared_mem, unroll)
-        step_time = timing.mean_ms
-
-        # Compute reward
-        # Positive = improvement over baseline, Negative = regression
-        if self._baseline_time > 0:
-            speedup = (self._baseline_time - step_time) / self._baseline_time
-        else:
-            speedup = 0.0
-
-        # Scale reward and clip to [-1, 1]
-        # A 26% speedup (CuAsmRL max) would give reward ≈ 0.26
-        reward = float(np.clip(speedup, -1.0, 1.0))
-
-        if speedup > self._best_speedup:
-            self._best_speedup = speedup
-
-        # Normalize action for state
-        self._prev_action = np.array([
-            block_size / 512.0,
-            reg_cap / 128.0,
-            shared_mem / 49152.0,
-            unroll / 8.0
-        ], dtype=np.float32)
-
-        obs = self._build_obs()
-
-        terminated = False  # Never terminate early
-        truncated  = (self._step_count >= self.config.max_steps)
-
-        info = {
-            "step_time_ms": step_time,
-            "baseline_time_ms": self._baseline_time,
-            "speedup": speedup,
-            "best_speedup": self._best_speedup,
-            "block_size": block_size,
-            "reg_cap": reg_cap,
-        }
-
-        return obs, reward, terminated, truncated, info
-
-    def _measure_kernel(self, block_size: int, reg_cap: int,
-                         shared_mem: int, unroll: int):
-        """Run the configured kernel and return timing."""
-        import numba.cuda as cuda
-        from profiling.cuda_timer import time_kernel
-
-        kernel_name = self.config.kernel_name
-        N = self.config.matrix_size
-
-        if kernel_name == "gemm":
-            from kernels.gemm import gemm_kernel_16, run_gemm
-            A, B, C, grid, block = run_gemm(N, block_size, warmup=2)
-            return time_kernel(gemm_kernel_16, grid, block, (A, B, C, N), warmup=2, repeats=5)
-        elif kernel_name == "reduction":
-            from kernels.reduction import reduction_kernel, run_reduction
-            x, out, grid, block = run_reduction(N * N, block_size, warmup=2)
-            return time_kernel(reduction_kernel, grid, block, (x, out, N*N), warmup=2, repeats=5)
-        else:
-            raise ValueError(f"Unknown kernel: {kernel_name}")
-
-    def _collect_cupti_state(self) -> np.ndarray:
+        Reward:
+            - baseline_ms measured at reset()
+            - speedup = baseline_ms / measured_ms
+            - reward  = speedup - 1
         """
-        Collect CUPTI counters for current kernel.
-        Returns normalized 5-dim vector.
 
-        Note: For prototype, we use NVML as a faster approximation
-        when ncu is too slow (ncu adds ~2s overhead per collection).
-        In production runs, use self.cupti.collect() instead.
-        """
-        # Fast approximation via NVML (for training speed)
-        nvml_vec = self.nvml.to_vector()  # [gpu_util, mem_util, mem_used_ratio, temp]
-        # Pad/map to CUPTI-like format
-        cupti_approx = np.array([
-            nvml_vec[0],  # sm_util → achieved_occupancy proxy
-            0.5,          # l2_hit_rate (unknown from NVML)
-            nvml_vec[1],  # mem_util → dram_bw proxy
-            nvml_vec[0],  # warp_eff proxy
-            nvml_vec[0],  # sm_active proxy
-        ], dtype=np.float32)
-        return cupti_approx
+        metadata = {"render_modes": []}
 
-    def _build_obs(self) -> np.ndarray:
-        """Build the full observation vector."""
-        cupti_vec  = self._collect_cupti_state()         # (5,)
-        nvml_vec   = self.nvml.to_vector()               # (4,)
-        kernel_ohe = self._kernel_onehot()               # (3,)
-        prev_act   = self._prev_action                   # (4,)
+        def __init__(self, cfg: Optional[EpisodeConfig] = None, *, obs_spec: Optional[ObservationSpec] = None):
+                super().__init__()
+                self.cfg = cfg or EpisodeConfig()
+                self.obs_spec = obs_spec or ObservationSpec(include_nvml=self.cfg.use_nvml)
 
-        obs = np.concatenate([cupti_vec, nvml_vec, kernel_ohe, prev_act])
-        return obs.astype(np.float32)
+                self.action_space = make_action_space()
+                self.observation_space = make_observation_space(self.obs_spec)
 
-    def _kernel_onehot(self) -> np.ndarray:
-        idx = KERNEL_NAMES.index(self.config.kernel_name)
-        ohe = np.zeros(len(KERNEL_NAMES), dtype=np.float32)
-        ohe[idx] = 1.0
-        return ohe
+                self._step = 0
+                self._kernel_name = "gemm"
+                self._baseline_ms = 1.0
+                self._prev_action_norm = np.zeros(2, dtype=np.float32)
+
+                self._cupti: Optional[CUPTICollector] = None
+                self._nvml = None
+
+        def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
+                # 1) pick kernel (cfg.kernel_name or random)
+                # 2) measure baseline_ms with (block_size=256, reg_cap=0)
+                # 3) collect metrics (or zeros) + build observation
+                # 4) return (obs, info)
+                raise NotImplementedError
+
+        def step(self, action):
+                # 1) decode_action(action) -> (block_size, reg_cap)
+                # 2) measure time_ms and compute reward via speedup_reward
+                # 3) collect metrics (or zeros) + build observation
+                # 4) return (obs, reward, terminated=False, truncated=max_steps, info)
+                raise NotImplementedError
 ```
+
+### 6.2 `experiments/phase3_rollout_log.py` (Artifact Generator)
+
+This script produces **journal-ready CSV artifacts** for Phase 3 without requiring training.
+
+Outputs:
+- `results/tables/phase3_rollout.csv` (step-level)
+- `results/tables/phase3_episode_summary.csv` (episode-level)
+
+Run (Windows CMD, NVML only — fast):
+
+```bash
+cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stack" && conda activate gpu-jit-opt && python experiments\phase3_rollout_log.py --episodes-per-case 5 --max-steps 20 --matrix-sizes 64 128 --use-nvml
+```
+
+Run (CUPTI + NVML — slower; may need Administrator):
+
+```bash
+cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stack" && conda activate gpu-jit-opt && python experiments\phase3_rollout_log.py --episodes-per-case 3 --max-steps 10 --matrix-sizes 64 --use-nvml --use-cupti --cupti-timeout-s 180
+```
+
+### 6.3 Phase 3 CSV Schema (Column Meanings)
+
+#### `results/tables/phase3_rollout.csv` (step-level)
+
+Core identifiers:
+- `episode_id`: unique episode index across all cases.
+- `episode_seed`: RNG seed used for that episode.
+- `step`: step index within the episode (0-based).
+
+Workload and action:
+- `kernel`: kernel name (`gemm`, `reduction`, `softmax`).
+- `matrix_size`: N parameter for that case.
+- `block_size`: chosen CUDA block size (threads per block).
+- `reg_cap`: chosen register cap (0 means PTXAS default / no cap requested).
+
+Timing + learning signal:
+- `time_ms`: measured runtime for the chosen config.
+- `baseline_ms`: baseline runtime measured at `reset()` for that episode (block_size=256, reg_cap=0).
+- `speedup`: `baseline_ms / time_ms`.
+- `reward`: `speedup - 1`.
+
+CUPTI / Nsight Compute status:
+- `cupti_ok`: whether metric collection succeeded for this step.
+- `cupti_reason`: reason string when not ok (e.g., `disabled`, permission errors, timeout).
+
+CUPTI metric columns (normalized, 0..1):
+- `cupti_achieved_occupancy_norm`
+- `cupti_l2_hit_rate_norm`
+- `cupti_dram_bw_pct_norm`
+- `cupti_sm_active_pct_norm`
+
+NVML telemetry columns (normalized):
+- `nvml_gpu_util_norm`: SM utilization fraction (0..1).
+- `nvml_mem_util_norm`: memory interface utilization fraction (0..1).
+- `nvml_mem_used_frac`: VRAM used fraction (0..1).
+- `nvml_temp_norm`: temperature / 100 (roughly 0..1).
+
+#### `results/tables/phase3_episode_summary.csv` (episode-level)
+
+- `episode_id`, `episode_seed`, `kernel`, `matrix_size`: identifiers.
+- `max_steps`: configured per-episode step budget.
+- `use_cupti`, `use_nvml`: whether each source was enabled.
+- `baseline_ms`: baseline runtime measured at `reset()`.
+- `mean_time_ms`: mean `time_ms` over episode steps.
+- `mean_reward`: mean reward over episode steps.
+- `best_speedup`: max speedup achieved within the episode.
+- `best_reward`: max reward achieved within the episode.
+- `steps`: number of steps actually logged (should equal `max_steps` unless truncated early).
 
 ---
 

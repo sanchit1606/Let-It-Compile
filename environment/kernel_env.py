@@ -4,6 +4,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+import threading
+import time
+
 import gymnasium as gym
 import numpy as np
 
@@ -220,6 +223,67 @@ cuda.default_stream().synchronize()
         except Exception:
             return np.zeros(4, dtype=np.float32)
 
+    def _collect_nvml_peak_during(self, fn) -> Tuple[Optional[np.ndarray], Any]:
+        """Collect peak NVML utilization while running a blocking function.
+
+        On Windows/WDDM, NVML utilization can read as 0 for short kernels because it is
+        reported over a coarse sampling window. When CUPTI is enabled, the `ncu` subprocess
+        runs long enough for NVML to update; polling NVML concurrently yields a much more
+        stable utilization signal.
+
+        Returns:
+          (nvml_vec_or_none, fn_result)
+        """
+
+        if not self.obs_spec.include_nvml:
+            return None, fn()
+
+        self._ensure_collectors()
+        if self._nvml is None:
+            return np.zeros(4, dtype=np.float32), fn()
+
+        stop = threading.Event()
+        lock = threading.Lock()
+
+        peak_gpu = 0.0
+        peak_mem = 0.0
+        last_used = 0.0
+        last_temp = 0.0
+
+        def _worker():
+            nonlocal peak_gpu, peak_mem, last_used, last_temp
+            while not stop.is_set():
+                try:
+                    v = self._nvml.to_vector()
+                    gpu = float(v[0]) if len(v) > 0 else 0.0
+                    mem = float(v[1]) if len(v) > 1 else 0.0
+                    used = float(v[2]) if len(v) > 2 else 0.0
+                    temp = float(v[3]) if len(v) > 3 else 0.0
+                    with lock:
+                        peak_gpu = max(peak_gpu, gpu)
+                        peak_mem = max(peak_mem, mem)
+                        last_used = used
+                        last_temp = temp
+                except Exception:
+                    pass
+
+                # 20 Hz polling keeps overhead low and still catches updates.
+                time.sleep(0.05)
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        try:
+            res = fn()
+        finally:
+            stop.set()
+            t.join(timeout=1.0)
+
+        with lock:
+            vec = np.array([peak_gpu, peak_mem, last_used, last_temp], dtype=np.float32)
+        vec = np.nan_to_num(vec, nan=0.0, posinf=1.0, neginf=0.0).astype(np.float32)
+        vec = np.clip(vec, 0.0, 1.0)
+        return vec, res
+
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
         super().reset(seed=seed)
         if seed is not None:
@@ -233,8 +297,15 @@ cuda.default_stream().synchronize()
 
         self._prev_action_norm = np.zeros(2, dtype=np.float32)
 
-        cupti_vec, cupti_reason, cupti_ok = self._collect_cupti_norm(self._kernel_name, block_size=256, reg_cap=0)
-        nvml_vec = self._collect_nvml_norm() if self.obs_spec.include_nvml else None
+        # NVML: best-effort. For CUPTI runs, poll NVML during the `ncu` subprocess.
+        if self.cfg.use_cupti and self.obs_spec.include_nvml:
+            nvml_vec, cupti_res = self._collect_nvml_peak_during(
+                lambda: self._collect_cupti_norm(self._kernel_name, block_size=256, reg_cap=0)
+            )
+            cupti_vec, cupti_reason, cupti_ok = cupti_res
+        else:
+            nvml_vec = self._collect_nvml_norm() if self.obs_spec.include_nvml else None
+            cupti_vec, cupti_reason, cupti_ok = self._collect_cupti_norm(self._kernel_name, block_size=256, reg_cap=0)
 
         obs = build_observation(
             kernel_name=self._kernel_name,
@@ -273,8 +344,15 @@ cuda.default_stream().synchronize()
         measured_ms = self._measure_time_ms(self._kernel_name, block_size=a.block_size, reg_cap=a.reg_cap)
         rr = speedup_reward(baseline_ms=self._baseline_ms, measured_ms=measured_ms)
 
-        cupti_vec, cupti_reason, cupti_ok = self._collect_cupti_norm(self._kernel_name, block_size=a.block_size, reg_cap=a.reg_cap)
-        nvml_vec = self._collect_nvml_norm() if self.obs_spec.include_nvml else None
+        # NVML: best-effort. For CUPTI runs, poll NVML during the `ncu` subprocess.
+        if self.cfg.use_cupti and self.obs_spec.include_nvml:
+            nvml_vec, cupti_res = self._collect_nvml_peak_during(
+                lambda: self._collect_cupti_norm(self._kernel_name, block_size=a.block_size, reg_cap=a.reg_cap)
+            )
+            cupti_vec, cupti_reason, cupti_ok = cupti_res
+        else:
+            nvml_vec = self._collect_nvml_norm() if self.obs_spec.include_nvml else None
+            cupti_vec, cupti_reason, cupti_ok = self._collect_cupti_norm(self._kernel_name, block_size=a.block_size, reg_cap=a.reg_cap)
 
         obs = build_observation(
             kernel_name=self._kernel_name,
