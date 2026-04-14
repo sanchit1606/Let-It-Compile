@@ -19,13 +19,13 @@
 
 This project implements a **7-phase prototype** for automated GPU kernel compilation optimization:
 
-1. **Phase 0** — Foundational Experiment (Baseline table: regcap → occupancy → runtime)
-2. **Phase 1** — CUPTI Instrumentation (Hardware counter collection via ncu)
-3. **Phase 2** — Benchmark Kernels (GEMM, reduction, softmax)
-4. **Phase 3** — RL Environment (Gymnasium interface)
-5. **Phase 4** — PPO Agent Training (Stable-Baselines3)
-6. **Phase 5** — BiLSTM Phase Detector (Optional: classify kernel phases)
-7. **Phase 6** — GNN IR Encoder (Optional: kernel structure encoding)
+1. **Phase 0** - Foundational Experiment (Baseline table: regcap → occupancy → runtime)
+2. **Phase 1** - CUPTI Instrumentation (Hardware counter collection via ncu)
+3. **Phase 2** - Benchmark Kernels (GEMM, reduction, softmax)
+4. **Phase 3** - RL Environment (Gymnasium interface)
+5. **Phase 4** - PPO Agent Training (Stable-Baselines3)
+6. **Phase 5** - BiLSTM Phase Detector (Optional: classify kernel phases)
+7. **Phase 6** - GNN IR Encoder (Optional: kernel structure encoding)
 
 ## 📖 Documentation
 
@@ -190,12 +190,6 @@ pytest tests/ --cov=. --cov-report=html
 4. **Build RL env** → `environment/kernel_env.py`
 5. **Train agent** → `training/train_rl.py`
 6. **Evaluate** → `experiments/phase2_rl_baseline.py`
-
-## Documentation
-
-- See `implementation-plan.md` for detailed 2000-line implementation guide
-- Phase 0 is the foundational experiment — start here
-- Each phase builds on the previous one
 
 ## Troubleshooting
 
