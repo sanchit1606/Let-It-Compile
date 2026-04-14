@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 
@@ -144,13 +145,22 @@ def train_ppo(
         save_freq=max(1, total_steps // 10),  # ~10 checkpoints over training
         save_path=str(_MODELS_DIR),
         name_prefix="ppo_checkpoint",
-        save_replay_buffer=False,
-        save_vecenv_wrapper=False,
     )
     
     callbacks = [checkpoint_callback]
     if eval_callback is not None:
         callbacks.append(eval_callback)
+    
+    # Detect and set device for PyTorch/SB3
+    if torch.cuda.is_available():
+        device = "cuda"
+        logger.info(f"CUDA available: {torch.cuda.get_device_name(0)}")
+        logger.info(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+    else:
+        device = "cpu"
+        logger.warning("CUDA not available. Falling back to CPU (training will be SLOW).")
+    
+    logger.info(f"Training device: {device}")
     
     # PPO agent
     logger.info(f"Creating PPO agent...")
@@ -167,6 +177,7 @@ def train_ppo(
         ent_coef=entropy_coeff,
         verbose=1,
         tensorboard_log=str(_LOGS_DIR / "tensorboard"),
+        device=device,
     )
     
     logger.info(f"Starting training for {total_steps} steps...")

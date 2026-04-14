@@ -797,25 +797,212 @@ Important practical note:
 
 ---
 
-## Phase 3 Training (Optional: PPO with Stable-Baselines3)
+## Phase 3 Training — PPO with Stable-Baselines3
 
-After validating the environment with `phase3_rollout_log.py`, you can optionally train a PPO agent to learn an optimization policy.
+After validating the environment with `phase3_rollout_log.py`, you can train a PPO agent to learn an optimization policy.
+
+### Beginner concept: what is PPO (Proximal Policy Optimization)?
+
+**PPO** is a **reinforcement learning algorithm** that teaches an agent to make good decisions based on observations.
+
+In this project:
+- **Agent**: the PPO neural network (a "policy")
+- **Environment**: the Gymnasium kernel optimization environment
+- **Observation**: GPU metrics + kernel identity + previous action
+- **Action**: a choice of (block_size, reg_cap)
+- **Reward**: speedup relative to baseline (higher = better)
+
+How PPO "learns":
+1. The agent **observes** the current kernel and GPU telemetry.
+2. The agent **chooses an action** (e.g., try block_size=128, reg_cap=32).
+3. The environment **executes that configuration** and measures runtime.
+4. The agent receives a **reward** (positive if faster than baseline, negative if slower).
+5. PPO **updates the neural network** to encourage actions that led to high rewards and discourage actions that led to low rewards.
+
+After many episodes, the agent learns patterns like:
+- "GEMM usually benefits from larger block sizes"
+- "Reduction is sensitive to register pressure"
+- "Softmax with these metrics prefers moderate register caps"
+
+### The state/action/reward cycle
+
+#### Observation vector (the agent's input)
+
+Each observation is a vector of normalized values $[0, 1]$:
+
+**Kernel identity** (one-hot encoded):
+- Three binary features indicating which of `{gemm, reduction, softmax}` is running.
+- Example: `[1, 0, 0]` means `gemm`, `[0, 1, 0]` means `reduction`, etc.
+
+**Previous action** (normalized indices):
+- Two features: the normalized indices of the previously chosen `block_size` and `reg_cap`.
+- Example: if block_size candidates are `[64, 128, 256]` and we chose index 1, then `block_size_norm = 1 / 2 = 0.5`.
+- On the first step of an episode, these are zero.
+
+**CUPTI metrics** (if `--use-cupti` is enabled, optional):
+- Four metrics collected from Nsight Compute (`ncu`), each normalized to $[0,1]$:
+  - `achieved_occupancy_norm`: how many warps were active (0–1)
+  - `l2_hit_rate_norm`: cache efficiency (0–1)
+  - `dram_bw_pct_norm`: DRAM bandwidth usage as fraction of peak (0–1)
+  - `sm_active_pct_norm`: compute unit utilization (0–1)
+- If CUPTI is disabled or fails, these four values are zero.
+
+**NVML telemetry** (lightweight, always enabled by default):
+- Four lightweight GPU metrics:
+  - `gpu_util_norm`: how busy the GPU is (0–1)
+  - `mem_util_norm`: how busy the memory system is (0–1)
+  - `mem_used_frac`: how much VRAM is in use (0–1)
+  - `temp_norm`: temperature normalized by 100 (0–1)
+
+**Total observation dimension**:
+- `3` (kernel one-hot) + `2` (previous action) + `4` (CUPTI, if enabled) + `4` (NVML) = **13 dimensions** with CUPTI, or **9 dimensions** without CUPTI.
+
+#### Action and action decoding
+
+The discrete action space is:
+
+$$
+	ext{action\_space} = \text{Discrete}(\text{num\_block\_sizes} \times \text{num\_reg\_caps})
+$$
+
+In the current implementation:
+- Block sizes: `[64, 128, 256]` (3 options)
+- Register caps: `[0, 32, 64]` (3 options: `0` means default)
+- Total outcomes: $3 \times 3 = 9$ possible actions, indexed 0–8
+
+The environment **decodes** a given action integer into `(block_size, reg_cap)` by treating it as a multi-discrete index.
+
+Example decoding:
+- Action 0 → `(block_size=64, reg_cap=0)`
+- Action 4 → `(block_size=128, reg_cap=32)`
+- Action 8 → `(block_size=256, reg_cap=64)`
+
+#### Reward
+
+After taking an action, the environment measures the kernel runtime and computes:
+
+$$
+\text{speedup} = \frac{\text{baseline\_ms}}{\text{measured\_ms}}
+$$
+
+$$
+\text{reward} = \text{speedup} - 1
+$$
+
+Interpretation:
+- `reward = 0.2` means the configuration was 20% faster than baseline (speedup = 1.2).
+- `reward = -0.1` means the configuration was 10% slower than baseline (speedup = 0.9).
+- `reward` directly encodes the agent's objective: **maximize speedup**.
+
+The baseline is measured once at `reset()` with `(block_size=256, reg_cap=0)`.
+
+#### Episode structure
+
+One episode consists of:
+1. **Reset**: pick a random kernel + matrix size, measure baseline
+2. **Steps**: the agent chooses actions for `--max-episode-len` steps
+3. **Termination**: the episode ends (truncated) after `--max-episode-len` steps
+
+Each episode typically produces 10–50 (block_size, reg_cap) trials, and the agent learns which configurations tend to be fast.
+
+### NVML-only vs CUPTI+NVML: which should I use?
+
+This is the key decision when running training.
+
+#### Mode 1: NVML-only (fast, no privileges needed)
+
+**Command (Windows):**
+
+```bash
+cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stack" && conda activate gpu-jit-opt && python train_rl.py --total-steps 50000 --max-episode-len 50 --use-nvml
+```
+
+**Characteristics:**
+- **Speed**: ~5–20 minutes for 50k steps (depends on hardware).
+- **Privileges**: Does NOT require Administrator terminal.
+- **Observation**: Only NVML telemetry (lightweight) + kernel identity + previous action.
+  - CUPTI metric columns are all zero.
+  - Observation dimension: 9 (instead of 13).
+- **What the agent learns**: Patterns from light telemetry (GPU util, memory util, temperature).
+  - This is less informative than CUPTI, but fast and sufficient for basic optimization.
+  - Example: "Reduction gets hot → try lower block size."
+
+**When to use:**
+- First-time training (to validate the setup works).
+- Quick experimentation cycles.
+- Systems where GPU counter access is unavailable or administratively restricted.
+- Rapid iteration: collect baseline results quickly, then iterate on **what configurations work empirically**.
+
+---
+
+#### Mode 2: CUPTI+NVML (slow, more informative) 
+
+**Command (Windows, requires Administrator terminal):**
+
+```bash
+cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stack" && conda activate gpu-jit-opt && python train_rl.py --total-steps 50000 --max-episode-len 30 --use-cupti --use-nvml --cupti-timeout-s 180
+```
+
+**Characteristics:**
+- **Speed**: ~2–8 hours for 50k steps (much slower).
+  - Each step runs the kernel under `ncu` profiler, which adds significant overhead.
+  - Note: `--max-episode-len 30` (not 50) to keep total time reasonable.
+- **Privileges**: **Requires** Administrator Command Prompt (GPU counter access).
+- **Observation**: CUPTI counters (achieved occupancy, L2 hit rate, DRAM BW, SM utilization) + NVML + kernel identity + previous action.
+  - Observation dimension: 13 (full).
+- **What the agent learns**: Rich hardware metrics.
+  - Example patterns: "Achieved occupancy > 0.6 AND DRAM BW < 0.8 → this config is register-constrained, try lower reg cap."
+  - More detailed signals can lead to **better optimization**, but the agent needs more data to learn robust patterns.
+
+**When to use:**
+- **Production runs** where you want the agent to learn from detailed hardware metrics.
+- **Benchmarking / paper writing**: the trained policy may be more robust and better-tuned.
+- You have access to an Administrator terminal.
+- You have time (a few hours).
+- The extra hardware-level features are worth the overhead for your use case.
+
+---
+
+#### Side-by-side comparison
+
+| Aspect | NVML-only | CUPTI+NVML |
+|--------|----------|-----------|
+| **Training time (50k steps)** | ~5–20 min | ~2–8 hours |
+| **Requires Administrator** | No | Yes |
+| **Privileges needed** | None | GPU counters |
+| **Observation dim** | 9 | 13 |
+| **Metrics** | GPU util, mem util, temp | + occupancy, cache, DRAM BW, SM util |
+| **Policy quality** | Good (basic heuristics) | Better (rich signals) |
+| **Iterative development** | ✓ (fast feedback) | ✗ (slow; use once) |
+| **Paper/publication** | Acceptable | Preferred |
+
+---
 
 ### How to run PPO training (fast mode, NVML only)
 
-On Windows CMD (estimated 1–5 hours depending on `--total-steps`):
+On Windows CMD (estimated 5–20 minutes for 50k steps):
 
 ```bash
 cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stack" && conda activate gpu-jit-opt && python train_rl.py --total-steps 50000 --max-episode-len 50 --eval-freq 5000 --n-eval-episodes 5 --use-nvml
 ```
 
+This trains for 50,000 environment steps, with evaluation every 5,000 steps (5 episodes per eval). The agent runs with only NVML telemetry.
+
+---
+
 ### How to run PPO training (with CUPTI metrics, slower)
 
-Requires Administrator terminal on Windows:
+**Run in an Administrator Command Prompt** (so GPU counters are available):
 
 ```bash
-cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stack" && conda activate gpu-jit-opt && python train_rl.py --total-steps 50000 --max-episode-len 30 --use-cupti --use-nvml --cupti-timeout-s 180
+cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stack" && conda activate gpu-jit-opt && python train_rl.py --total-steps 50000 --max-episode-len 30 --use-cupti --use-nvml --cupti-timeout-s 180 --eval-freq 10000 --n-eval-episodes 3
 ```
+
+This trains with CUPTI metrics (slow), reduces max episode length to 30 to keep training time reasonable, and evaluates only every 10k steps.
+
+**Important**: `--cupti-timeout-s 180` means each CUPTI collection step may take up to 180 seconds. If `ncu` hangs or is very slow, increase this timeout. If it's consistently timing out, ensure you're running as Administrator and that Nsight Compute is installed.
+
+---
 
 ### Expected training output
 
@@ -823,40 +1010,164 @@ cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stac
 [2026-04-14 12:00:00] train_rl - INFO - ====================================
 [2026-04-14 12:00:00] train_rl - INFO - Phase 3: PPO Training (Stable-Baselines3)
 [2026-04-14 12:00:00] train_rl - INFO - Total steps: 50000
-[phase3] Creating training environment...
+[2026-04-14 12:00:00] train_rl - INFO - Learning rate: 0.0003
+[2026-04-14 12:00:00] train_rl - INFO - Batch size: 2048
+[2026-04-14 12:00:00] train_rl - INFO - Creating training environment...
 
+---Logging in with PPO---
 Step: 1000 / 50000
 Step: 2000 / 50000
 ...
+Eval: mean_reward = 0.1234, mean_ep_length = 45.0
+Step: 5000 / 50000
+...
 Training complete. Saving final model...
 Training summary saved to results/logs/training_summary.json
+====================================
 ```
+
+Watch for:
+- **`mean_reward` increasing over time**: the agent is learning (good sign).
+- **`mean_ep_length`**: how many steps per episode. Should be fairly stable (~max_episode_len).
+- **Warnings about `permission_denied`** (if using CUPTI): means GPU counters are not available; run as Administrator or switch to NVML-only mode.
+
+---
 
 ### Training artifacts
 
 After training completes:
-- **Final model**: `results/models/ppo_final.zip` — trained policy (can be loaded with `PPO.load()`)
-- **Best model** (if eval enabled): `results/models/best/best_model.zip` — highest validation reward
-- **Checkpoints**: `results/models/ppo_checkpoint_*.zip` — periodic snapshots during training
-- **Training log**: `results/logs/train_rl.log` — detailed logging output
-- **Summary**: `results/logs/training_summary.json` — hyperparameters + artifact paths
-- **TensorBoard logs**: `results/logs/tensorboard/` — real-time plot visualization (run `tensorboard --logdir=results/logs/tensorboard/`)
 
-### PPO Training Configuration
+**Model files**:
+- `results/models/ppo_final.zip` — trained policy weights (loadable with `PPO.load()`)
+- `results/models/best/best_model.zip` (if `--eval-freq` set) — best checkpoint during evaluation
+- `results/models/ppo_checkpoint_*.zip` — periodic snapshots (one every ~10% of training)
 
-Key command-line arguments (see `python train_rl.py --help` for full list):
+**Logs and summaries**:
+- `results/logs/train_rl.log` — detailed training log (timestamps, step counts, warnings)
+- `results/logs/training_summary.json` — a JSON summary with all hyperparameters and artifact paths:
+  ```json
+  {
+    "total_steps": 50000,
+    "learning_rate": 0.0003,
+    "batch_size": 2048,
+    "model_path": "results/models/ppo_final.zip",
+    "best_model_path": "results/models/best/best_model.zip",
+    "log_path": "results/logs"
+  }
+  ```
 
-- `--total-steps NUM`: Total environment steps to train on (default: 100000). Larger = longer training.
-- `--batch-size NUM`: Steps collected per gradient update (default: 2048). Larger batches = more stable updates.
-- `--max-episode-len NUM`: Max steps per episode (default: 50). Limits episode length to control variance.
-- `--learning-rate LR`: PPO learning rate (default: 3e-4). Lower = slower but more stable.
-- `--n-epochs N`: Gradient update epochs per batch (default: 10). Higher = more optimization per sample.
-- `--gamma GAMMA`: Discount factor (default: 0.99). How much future rewards matter.
-- `--clip-range CLIP`: PPO clipping range (default: 0.2). Smaller = conservative updates.
-- `--eval-freq FREQ`: Evaluate every N steps (optional; no eval if not set).
-- `--n-eval-episodes N`: Number of eval episodes per evaluation (optional).
-- `--use-cupti`: Enable CUPTI metrics (slow; may need admin).
-- `--use-nvml`: Enable NVML telemetry (default: on, fast).
-- expected terminal output
-- what each column means
-- common gotchas
+**TensorBoard visualization**:
+- `results/logs/tensorboard/` — live plots (reward, episode length, policy loss, value loss)
+- View them in real-time or after training by running:
+  ```bash
+  tensorboard --logdir results/logs/tensorboard
+  ```
+  Then open `http://127.0.0.1:6006` in your browser.
+
+---
+
+### PPO Hyperparameters in detail
+
+These are the tunable knobs when running `python train_rl.py`. You only need to understand a few; the defaults are reasonable.
+
+**Core PPO parameters:**
+
+- `--total-steps NUM` (default: 100000)
+  - Total number of environment interactions (steps) during training.
+  - Larger = longer training, potentially better convergence, but slower.
+  - Typical range: 10k–100k for this task. Start with 50k.
+
+- `--batch-size NUM` (default: 2048)
+  - Number of steps collected per gradient update ("rollout").
+  - Larger batches = more stable updates but more GPU memory.
+  - Keep at 2048 unless you hit memory limits.
+
+- `--learning-rate LR` (default: 3e-4)
+  - Step size for gradient descent.
+  - Higher = faster updates but risk instability.
+  - Lower = slower but more stable.
+  - Typical range: 1e-4 to 1e-3. Use 3e-4 unless training is unstable (high variance in reward).
+
+- `--n-epochs N` (default: 10)
+  - How many times PPO processes each batch of collected samples.
+  - Higher = more optimization on each batch but risk overfitting.
+  - Keep at 10 unless training is very noisy.
+
+- `--gamma GAMMA` (default: 0.99)
+  - Discount factor: how much the agent values future rewards vs immediate rewards.
+  - 0.99 = heavily discount the future (short-term thinking).
+  - 0.99+ = slightly more long-term planning.
+  - Keep at 0.99 for this task (episodes are only ~30–50 steps).
+
+- `--gae-lambda LAMBDA` (default: 0.95)
+  - Generalized Advantage Estimation parameter (controls how far into future advantages are estimated).
+  - Keep at 0.95 (a standard value).
+
+- `--clip-range CLIP` (default: 0.2)
+  - PPO's clipping range: constrains how much the policy can change per update.
+  - Larger = more aggressive updates, risk destabilization.
+  - Smaller = conservative updates, slower convergence.
+  - Keep at 0.2 unless the policy converges too slowly.
+
+- `--entropy-coeff COEFF` (default: 0.01)
+  - Encourages exploration (the agent tries diverse actions, not just the "greedy" best action).
+  - Higher = more exploration (agent tries more configurations).
+  - Lower = exploitation (agent commits to promising configurations).
+  - Keep at 0.01 for this task.
+
+**Episode and environment parameters:**
+
+- `--max-episode-len NUM` (default: 50)
+  - Maximum steps per episode.
+  - With NVML-only: use 50 (fast, can afford more exploration).
+  - With CUPTI: use 20–30 (slow, reduce per-episode profiling overhead).
+
+- `--warmup NUM` (default: 1)
+  - Kernel warmup runs before timing.
+  - Keep at 1 (no need for more in RL).
+
+- `--repeats NUM` (default: 5)
+  - How many times to measure each kernel (for averaging).
+  - Keep at 5 (reasonable balance).
+
+**Evaluation parameters (optional):**
+
+- `--eval-freq FREQ` (default: None, i.e., no evaluation)
+  - Run evaluation every `FREQ` environment steps.
+  - If set (e.g., `5000`), the agent is evaluated on separate episodes and the "best" model is saved.
+  - Recommended: set to 10–20% of total steps (e.g., for 50k steps, use 5000).
+
+- `--n-eval-episodes N` (default: None)
+  - Number of evaluation episodes per evaluation.
+  - Recommended: 3–5.
+
+**CUPTI parameters:**
+
+- `--use-cupti` (flag: off by default)
+  - Enable CUPTI/`ncu` metric collection.
+  - Requires Administrator on Windows; adds major overhead (2–8x slower).
+
+- `--use-nvml` (flag: on by default)
+  - Enable NVML lightweight telemetry.
+  - Recommended: always on (fast, informative).
+
+- `--cupti-timeout-s NUM` (default: 120)
+  - Timeout for `ncu` collection per step, in seconds.
+  - If CUPTI is slow on your machine, increase to 180–300.
+
+---
+
+### Quick decision guide
+
+**"Should I use NVML-only or CUPTI+NVML?"**
+
+1. **First time / new setup?** → NVML-only (quick feedback)
+2. **Want to iterate quickly?** → NVML-only (5–20 min per run)
+3. **Have time and want best results?** → CUPTI+NVML (2–8 hours per run)
+4. **Writing a paper / final results?** → CUPTI+NVML (richer metrics)
+5. **Admin not available?** → NVML-only (requires no privileges)
+
+For this project, a recommended workflow:
+1. Run NVML-only (50k steps, ~15 min) to validate training works.
+2. Check the learned policy quality in `results/models/ppo_final.zip`.
+3. If satisfied, you're done. If you want better results, run CUPTI+NVML (50k steps, ~4 hours) for publication.
