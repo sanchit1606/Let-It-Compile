@@ -1,0 +1,18 @@
+{
+  "total_steps": 50000,
+  "batch_size": 1024,
+  "learning_rate": 0.0003,
+  "n_epochs": 10,
+  "gamma": 0.99,
+  "gae_lambda": 0.95,
+  "clip_range": 0.2,
+  "entropy_coeff": 0.01,
+  "max_episode_len": 40,
+  "use_cupti": false,
+  "use_nvml": true,
+  "warmup": 1,
+  "repeats": 5,
+  "model_path": "C:\\Users\\HP\\Desktop\\CD PROBLEM STATEMENT\\JIT Optimization across GPU stack\\results\\models\\ppo_final.zip",
+  "best_model_path": "C:\\Users\\HP\\Desktop\\CD PROBLEM STATEMENT\\JIT Optimization across GPU stack\\results\\models\\best\\best_model.zip",
+  "log_path": "C:\\Users\\HP\\Desktop\\CD PROBLEM STATEMENT\\JIT Optimization across GPU stack\\results\\logs"
+}

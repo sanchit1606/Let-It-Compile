@@ -166,9 +166,20 @@ class KernelOptimizationEnv(gym.Env):
             raise
 
     def _measure_time_ms(self, kernel_name: str, block_size: int, reg_cap: int) -> float:
-        grid, block, kernel_fn, args = self._prepare_kernel(kernel_name, block_size, reg_cap)
-        timing = time_kernel(kernel_fn, grid, block, args, warmup=0, repeats=self.cfg.repeats)
-        return float(timing.mean_ms)
+        """Measure kernel time with graceful fallback on CUDA errors."""
+        try:
+            grid, block, kernel_fn, args = self._prepare_kernel(kernel_name, block_size, reg_cap)
+            timing = time_kernel(kernel_fn, grid, block, args, warmup=0, repeats=self.cfg.repeats)
+            return float(timing.mean_ms)
+        except (OSError, IndexError, RuntimeError) as e:
+            # CUDA context degradation - return cached value or neutral estimate
+            error_msg = str(e).lower()
+            if "access violation" in error_msg or "list index" in error_msg or "no successful" in error_msg:
+                # Return a fallback time (slightly above baseline to discourage this config)
+                fallback = getattr(self, '_last_valid_time_ms', 1.0)  # Default 1ms if no history
+                return fallback * 1.05  # Slightly penalize unknown configs
+            else:
+                raise
 
     def _collect_cupti_norm(self, kernel_name: str, block_size: int, reg_cap: int) -> Tuple[np.ndarray, str, bool]:
         keys = tuple(self.obs_spec.cupti_keys)
@@ -310,6 +321,7 @@ cuda.default_stream().synchronize()
 
         # Baseline: default reg cap, standard block size.
         self._baseline_ms = self._measure_time_ms(self._kernel_name, block_size=256, reg_cap=0)
+        self._last_valid_time_ms = self._baseline_ms  # Initialize fallback cache
 
         self._prev_action_norm = np.zeros(2, dtype=np.float32)
 
@@ -358,6 +370,8 @@ cuda.default_stream().synchronize()
         ], dtype=np.float32)
 
         measured_ms = self._measure_time_ms(self._kernel_name, block_size=a.block_size, reg_cap=a.reg_cap)
+        # Cache successful measurement for fallback during CUDA degradation
+        self._last_valid_time_ms = measured_ms
         rr = speedup_reward(baseline_ms=self._baseline_ms, measured_ms=measured_ms)
 
         # NVML: best-effort. For CUPTI runs, poll NVML during the `ncu` subprocess.

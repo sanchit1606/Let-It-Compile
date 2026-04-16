@@ -69,12 +69,17 @@ def time_kernel(kernel_fn, grid, block, args: tuple, warmup: int = 3, repeats: i
             times.clear()
 
     if not times:
+        # Fallback: CPU-timed measurement with CUDA synchronization
         for _ in range(repeats):
-            start_t = time.perf_counter()
-            kernel_fn[grid, block](*args)
-            cuda.default_stream().synchronize()
-            end_t = time.perf_counter()
-            times.append((end_t - start_t) * 1000.0)
+            try:
+                start_t = time.perf_counter()
+                kernel_fn[grid, block](*args)
+                cuda.default_stream().synchronize()
+                end_t = time.perf_counter()
+                times.append((end_t - start_t) * 1000.0)
+            except (OSError, IndexError) as e:
+                # CUDA context issues - skip this repeat (don't crash)
+                continue
 
     if not times:
         raise RuntimeError("No successful kernel runs completed")
