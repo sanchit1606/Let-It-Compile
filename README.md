@@ -98,6 +98,16 @@ Expected output: All packages installed, CUDA available, RTX 3050 Ti detected.
 
 ## Quick Start
 
+### ⚠️ IMPORTANT: Read First
+
+**Do NOT use `--use-cupti` for full PPO training.** It's extremely slow on Windows (70-400 hours for 50k steps).
+
+**Recommended workflow:**
+1. Train with NVML-only: `--use-nvml` (15-30 min)
+2. Analyze with CUPTI separately: `phase3_rollout_log.py --use-cupti` (30-60 min)
+
+See `CUPTI_PERFORMANCE_WARNING.md` and `QUICK_START_CORRECTED.md` for details.
+
 ### Phase 0: Foundational Experiment (Start Here)
 
 ```bash
@@ -109,28 +119,31 @@ This produces a CSV table showing:
 - The relationship between occupancy and kernel runtime
 - Which register cap values are optimal for different kernel types
 
-**Output:** `results/tables/phase0_baseline.csv`
+**Output:** `results/tables/phase0_baseline.csv`  
+**Time:** ~3 seconds
 
-### Phase 4: RL Training
-
-```bash
-python training/train_rl.py
-```
-
-Trains a PPO agent to select optimization parameters.
-
-**Monitoring:** `tensorboard --logdir results/logs`
-
-### Phase 7: Evaluation
+### Phase 3: PPO Training (NVML-only - RECOMMENDED)
 
 ```bash
-python experiments/phase2_rl_baseline.py --model results/checkpoints/best_model
+python train_rl.py --total-steps 50000 --max-episode-len 50 --use-nvml
 ```
 
-Compares three strategies:
-1. PTXAS default
-2. Random search
-3. Trained RL agent
+Trains a PPO agent to select optimization parameters (block size, register cap).
+
+**Time:** ~15-30 minutes  
+**Output:** Trained model in `results/models/ppo_final.zip`  
+**Monitoring:** `tensorboard --logdir results/logs/tensorboard`
+
+### Phase 3 Analysis: CUPTI Metrics (Optional)
+
+After training completes, collect detailed hardware metrics:
+
+```bash
+python phase3_rollout_log.py --use-cupti --use-nvml --kernels gemm reduction softmax --matrix-sizes 256 512 --episodes-per-case 3 --max-steps 10
+```
+
+**Time:** ~30-60 minutes  
+**Output:** Hardware counters (achieved occupancy, L2 hit rate, DRAM bandwidth, SM active %)
 
 ## Key Components
 

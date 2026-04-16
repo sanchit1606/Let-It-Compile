@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -92,9 +93,24 @@ def train_ppo(
     logger.info(f"GAE lambda: {gae_lambda}")
     logger.info(f"Clip range: {clip_range}")
     logger.info(f"Entropy coeff: {entropy_coeff}")
-    logger.info(f"CUPTI enabled: {use_cupti}")
-    logger.info(f"NVML enabled: {use_nvml}")
-    logger.info(f"Max episode length: {max_episode_len}")
+    logger.info("CUPTI enabled: {}".format(use_cupti))
+    logger.info("NVML enabled: {}".format(use_nvml))
+    
+    # **WARNING: CUPTI during full training is NOT RECOMMENDED on Windows**
+    if use_cupti and total_steps > 5000:
+        logger.warning("="*80)
+        logger.warning("!!! WARNING: CUPTI+full training is EXTREMELY SLOW on Windows !!!")
+        logger.warning("Each step calls ncu, which profiles the kernel (5-30 sec). With 50k steps,")
+        logger.warning("total time could be 50,000 * 5sec = 250,000 seconds = 70 hours!")
+        logger.warning("")
+        logger.warning("RECOMMENDATIONS:")
+        logger.warning("  1. Use NVML-only mode: --use-nvml (15-30 min for 50k steps)")
+        logger.warning("  2. Use CUPTI only for short rollout logging: phase3_rollout_log.py")
+        logger.warning("  3. Train with NVML-only, then analyze with CUPTI on small subset")
+        logger.warning("="*80)
+        time.sleep(3)  # Give user time to read warning
+    
+    logger.info("Max episode length: {}".format(max_episode_len))
     logger.info("=" * 80)
     
     # Training environment

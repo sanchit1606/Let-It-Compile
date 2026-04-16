@@ -701,13 +701,29 @@ reward = speedup - 1
 
                 <h2>Running Phase 3: PPO Training</h2>
 
-                <h3>NVML-only Training</h3>
+                <h3>⚠️ CRITICAL: Performance Warning</h3>
+                <div class="warning-box">
+                    <strong>DO NOT use --use-cupti for full PPO training on Windows.</strong><br><br>
+                    Each environment step calls Nsight Compute (ncu) profiling = 5-30 seconds per kernel.<br>
+                    With 50,000 steps: 50,000 × 5-30sec = <strong>70-400 hours of profiling!</strong><br><br>
+                    Observed: 22+ hours for 18% completion before CUDA context corruption.<br><br>
+                    <strong>Solution: Use NVML-only for training, CUPTI for short analysis runs.</strong>
+                </div>
+
+                <h3>NVML-only Training (RECOMMENDED)</h3>
                 <pre><code>python train_rl.py --total-steps 50000 --max-episode-len 50 --use-nvml --eval-freq 5000 --n-eval-episodes 5</code></pre>
                 <p><strong>Time:</strong> ~15–30 minutes</p>
+                <p><strong>Why:</strong> Fast, stable, no admin needed</p>
 
-                <h3>CUPTI+NVML Training</h3>
-                <pre><code>python train_rl.py --total-steps 50000 --max-episode-len 30 --use-cupti --use-nvml --cupti-timeout-s 180</code></pre>
-                <p><strong>Time:</strong> ~2–8 hours</p>
+                <h3>CUPTI Analysis (Optional, After Training)</h3>
+                <p>Collect detailed metrics on short subset with your trained policy:</p>
+                <pre><code>python phase3_rollout_log.py --use-cupti --use-nvml --kernels gemm reduction softmax --matrix-sizes 256 512 --episodes-per-case 3 --max-steps 10</code></pre>
+                <p><strong>Time:</strong> ~30–60 minutes</p>
+
+                <h3>Legacy: CUPTI+NVML Full Training (Not Recommended)</h3>
+                <pre><code>python train_rl.py --total-steps 5000 --max-episode-len 20 --use-cupti --use-nvml --cupti-timeout-s 180</code></pre>
+                <p><strong>Time:</strong> ~1–2 hours for 5k steps (MUCH slower for larger counts)</p>
+                <p><strong>Risk:</strong> After sustained profiling, CUDA contexts become unstable on Windows.</p>
 
                 <h2>Key PPO Hyperparameters</h2>
                 <table class="csv-table">
@@ -793,7 +809,7 @@ reward = speedup - 1
                         <td>Better (hardware-aware)</td>
                     </tr>
                     <tr>
-                        <td><strong>Use Case</strong></td>\n                        <td>Development, iteration, quick experiments</td>\n                        <td>Production, publication, final results</td>\n                    </tr>\n                    <tr>\n                        <td><strong>NVML Signal Quality</strong></td>\n                        <td>Decent (util, temp, memory)</td>\n                        <td>Same, plus detailed hardware counters</td>\n                    </tr>\n                </table>\n\n                <h3>Recommendation</h3>\n                <ul>\n                    <li><strong>First time / developing?</strong> Start with <code>--use-nvml</code>. Fast iteration, no admin needed.</li>\n                    <li><strong>Got good results?</strong> Run again with <code>--use-cupti --use-nvml</code> for publication-quality results.</li>\n                    <li><strong>On Windows and hitting admin issues?</strong> Stick with NVML-only; results are still valid.</li>\n                </ul>\n\n                <h3>NVML Signal Limitations</h3>\n                <p>On Windows (WDDM driver model), NVML metrics have a few quirks:</p>\n                <ul>\n                    <li><strong>GPU utilization is windowed (~100ms):</strong> Very short kernels may show 0% even if they ran.</li>\n                    <li><strong>Memory utilization can be bursty.</strong></li>\n                    <li><strong>Temperature is updated slowly.</strong></li>\n                </ul>\n                <p><strong>Workaround:</strong> CUPTI metrics (achieved occupancy, L2 hit rate, DRAM BW, SM active %) are more fine-grained and accurate during training. But NVML-only training still produces useful policies.</p>
+                        <td><strong>Use Case</strong></td>\n                        <td>Development, iteration, quick experiments</td>\n                        <td>Production, publication, final results</td>\n                    </tr>\n                    <tr>\n                        <td><strong>NVML Signal Quality</strong></td>\n                        <td>Decent (util, temp, memory)</td>\n                        <td>Same, plus detailed hardware counters</td>\n                    </tr>\n                </table>\n\n                <h3>Recommendation</h3>\n                <ul>\n                    <li><strong>Normal projects:</strong> Always use <code>--use-nvml</code>. Train in 15-30 min.</li>\n                    <li><strong>Publication/research:</strong> Train with NVML, then collect CUPTI metrics separately with phase3_rollout_log.py on smaller subset.</li>\n                    <li><strong>Do NOT:</strong> Combine CUPTI+full training (>5k steps). Will take days or crash.</li>\n                </ul>\n\n                <h3>Windows WDDM Driver Limitations</h3>\n                <p>Why is CUPTI+full training so slow/unstable on Windows?</p>\n                <ul>\n                    <li><strong>WDDM driver model:</strong> Adds overhead to profiler calls</li>\n                    <li><strong>ncu profiling:</strong> Each kernel run must be profiled in isolation (can't overlap)</li>\n                    <li><strong>Context switching:</strong> Sustained profiling destabilizes CUDA contexts after hours</li>\n                    <li><strong>Memory fragmentation:</strong> 22+ hours of continuous profiling leaves GPU memory fragmented</li>\n                </ul>\n                <p><strong>Workaround:</strong> Use NVML metrics during training (always available), profile with CUPTI afterwards on small subset.</p>
             </section>
 
             <!-- Output Artifacts Section -->

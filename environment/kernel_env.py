@@ -129,25 +129,41 @@ class KernelOptimizationEnv(gym.Env):
                 self._nvml = None
 
     def _prepare_kernel(self, kernel_name: str, block_size: int, reg_cap: int):
-        n = int(self.cfg.matrix_size)
+        """Prepare kernel with CUDA context safety."""
+        try:
+            n = int(self.cfg.matrix_size)
 
-        if kernel_name == "gemm":
-            A, B, C, grid, block, kernel_fn = run_gemm(n, block_size=block_size, warmup=self.cfg.warmup, reg_cap=reg_cap)
-            args = (A, B, C, np.int32(n))
-            return grid, block, kernel_fn, args
+            if kernel_name == "gemm":
+                A, B, C, grid, block, kernel_fn = run_gemm(n, block_size=block_size, warmup=self.cfg.warmup, reg_cap=reg_cap)
+                args = (A, B, C, np.int32(n))
+                return grid, block, kernel_fn, args
 
-        if kernel_name == "reduction":
-            total = int(n * n)
-            x, out, grid, block, kernel_fn = run_reduction(total, block_size=block_size, warmup=self.cfg.warmup, reg_cap=reg_cap)
-            args = (x, out, np.int32(total))
-            return grid, block, kernel_fn, args
+            if kernel_name == "reduction":
+                total = int(n * n)
+                x, out, grid, block, kernel_fn = run_reduction(total, block_size=block_size, warmup=self.cfg.warmup, reg_cap=reg_cap)
+                args = (x, out, np.int32(total))
+                return grid, block, kernel_fn, args
 
-        if kernel_name == "softmax":
-            x, out, grid, block, kernel_fn = run_softmax(n, block_size=block_size, warmup=self.cfg.warmup, reg_cap=reg_cap)
-            args = (x, out, np.int32(n), np.int32(n))
-            return grid, block, kernel_fn, args
+            if kernel_name == "softmax":
+                x, out, grid, block, kernel_fn = run_softmax(n, block_size=block_size, warmup=self.cfg.warmup, reg_cap=reg_cap)
+                args = (x, out, np.int32(n), np.int32(n))
+                return grid, block, kernel_fn, args
 
-        raise ValueError(f"Unknown kernel: {kernel_name}")
+            raise ValueError(f"Unknown kernel: {kernel_name}")
+        except OSError as e:
+            if "access violation" in str(e) or "CUDA" in str(e):
+                import numba.cuda as cuda
+                cuda.close()  # Reset CUDA context
+                time.sleep(0.1)  # Brief pause for driver to stabilize
+                # Retry once
+                n = int(self.cfg.matrix_size)
+                if kernel_name == "gemm":
+                    A, B, C, grid, block, kernel_fn = run_gemm(n, block_size=block_size, warmup=self.cfg.warmup, reg_cap=reg_cap)
+                    args = (A, B, C, np.int32(n))
+                    return grid, block, kernel_fn, args
+                else:
+                    raise
+            raise
 
     def _measure_time_ms(self, kernel_name: str, block_size: int, reg_cap: int) -> float:
         grid, block, kernel_fn, args = self._prepare_kernel(kernel_name, block_size, reg_cap)
