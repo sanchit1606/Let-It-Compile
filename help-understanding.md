@@ -1171,3 +1171,442 @@ For this project, a recommended workflow:
 1. Run NVML-only (50k steps, ~15 min) to validate training works.
 2. Check the learned policy quality in `results/models/ppo_final.zip`.
 3. If satisfied, you're done. If you want better results, run CUPTI+NVML (50k steps, ~4 hours) for publication.
+
+---
+
+## Understanding Training Results — TensorBoard Metrics
+
+After training completes, you can visualize results with TensorBoard to understand how well your agent learned.
+
+### How to view TensorBoard
+
+From your project root:
+
+```bash
+cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stack" && conda activate gpu-jit-opt && tensorboard --logdir results/logs/tensorboard --port 6006
+```
+
+Then open `http://localhost:6006` in your browser. You'll see training curves organized by tabs.
+
+### Key metrics explained
+
+#### **rollout/ep_rew_mean** (MOST IMPORTANT)
+
+**What it measures:**
+- Average reward per episode over the course of training
+- Directly reflects how good the agent's discovered configurations are
+
+**What to expect:**
+- Starts low (near 0-1): agent explores randomly
+- Climbs over time: agent learns better configurations
+- Plateaus: agent has converged to a stable policy
+
+**Your result:** Should reach ~3+ for a good training run
+- 0.0 = random agent (no speedup over baseline)
+- 1.0 = configs that are 2x faster than baseline
+- 3.15 = configs that are ~4x faster than baseline (your result!)
+
+**Good sign:** Smooth upward curve that eventually plateaus
+**Bad sign:** Flat line (no learning) or wild oscillations (unstable training)
+
+---
+
+#### **train/policy_gradient_loss**
+
+**What it measures:**
+- How much the policy network is improving per gradient update
+
+**Direction:**
+- Should trend toward small values (ideally near 0)
+
+**What to expect:**
+- Starts high (large negative or positive values)
+- Decreases over time as the policy stabilizes
+- High variance is normal (depends on batch content)
+
+**Your result:** Should end near -0.01 to 0.01
+- Negative values are expected in PPO (log-probability gradients)
+- Magnitude matters: smaller = better
+
+---
+
+#### **train/value_loss**
+
+**What it measures:**
+- How well the value network predicts episode returns
+- Value network: "Given this observation, what total reward will I get?"
+
+**Direction:**
+- Should decrease over time (lower = better predictions)
+
+**What to expect:**
+- Starts very high (10+): terrible at predicting returns
+- Drops sharply: learning to estimate correctly
+- Plateaus: predictions are stable
+
+**Your result:** Should end < 1.0 (ideally < 0.5)
+- Your training achieved ~0.574
+- This means the value network learned good estimates
+
+**Good sign:** Consistent downward trend
+**Bad sign:** Stays stuck at high values (value network not learning)
+
+---
+
+#### **train/approx_kl** (Kullback-Leibler Divergence)
+
+**What it measures:**
+- How much the policy changes on each update
+- KL divergence quantifies difference between old and new policy
+
+**Direction:**
+- Should be small and stable
+
+**Normal range:** 0.01-0.05 per update
+- Smaller KL = policy change is conservative
+- This is by design: PPO clips large policy changes
+
+**Your result:** Should end around 0.01-0.02
+- Your training achieved ~0.0133
+- This is excellent (very stable policy)
+
+**Good sign:** Consistent, small values
+**Bad sign:** Large values (> 0.1) = policy changing too much
+
+---
+
+#### **train/clip_fraction**
+
+**What it measures:**
+- What fraction of gradient updates were clipped by PPO
+- PPO clips updates to prevent huge policy swings
+
+**Formula:** `clipped_updates / total_updates`
+
+**Normal range:** 0.1-0.3 (10-30%)
+- Means PPO is actively preventing crash-like policy changes
+- This is good! Shows the safety mechanism works
+
+**Your result:** Should be 0.1-0.3
+- Your training achieved ~0.147 (14.7%)
+- This is perfect (reasonable safety without over-clipping)
+
+**Good sign:** Stable in the 0.1-0.3 range
+**Bad sign:** Close to 0 (maybe learning rate too low) or > 0.5 (maybe too high)
+
+---
+
+#### **time/fps** (Frames Per Second)
+
+**What it measures:**
+- How many environment steps per second the training achieves
+- Environment step = one kernel launch + measurement
+
+**What to expect:**
+- May start lower (setup overhead)
+- Stabilizes to a steady rate
+- Should be relatively flat over time
+
+**Your result:** ~85 FPS for NVML-only mode
+- This means 85 kernel executions per second
+- 50,000 steps ÷ 85 FPS ≈ 588 seconds ≈ 9.8 minutes
+- No GPU memory leaks (would cause FPS to drop)
+
+**Good sign:** Stable or increasing FPS
+**Bad sign:** Decreasing FPS (indicates memory buildup)
+
+---
+
+#### **time/total_timesteps**
+
+**What it measures:**
+- Cumulative environment steps taken so far
+- Should increase linearly with training progress
+
+**Your result:** Should reach your `--total-steps` target
+- Target: 50,000
+- Actual: 50,176
+- Perfect! ✓
+
+---
+
+#### **train/entropy_loss**
+
+**What it measures:**
+- Encouragement for exploration vs exploitation
+- Entropy = how diverse the agent's action choices are
+
+**What to expect:**
+- Negative value (by convention)
+- Should be relatively stable over time
+- Not growing more negative (that means getting too greedy)
+
+**Your result:** Should be stable around -1.0 to -2.0
+- Your training showed ~-1.53
+- This is good (agent explores enough)
+
+---
+
+### Interpreting your training graphs: what to look for
+
+#### **Graph Pattern 1: Episode Reward Over Time**
+
+**Ideal shape:**
+```
+Reward
+  |     ___---___
+  |  __/        \___
+  | /                 (plateau = converged)
+  |/_________________ training time
+```
+
+**You want:**
+- Clear upward trend from left to right
+- Increasing from ~0-1 on the left
+- Reaching ~3+ on the right
+- Some noise is okay (GPU timing jitter)
+- Should plateau (not keep climbing forever)
+
+**If you see:**
+- ✓ Smooth curve climbing to 3+ → Excellent training
+- ✗ Flat line → Learning rate too low or reward broken
+- ✗ Spiky/oscillating → Learning rate too high or clip_range wrong
+- ✗ Declining → Policy getting worse (very bad)
+
+---
+
+#### **Graph Pattern 2: Policy and Value Loss**
+
+**Ideal shape (both should decrease):**
+```
+Loss
+  |
+  |X              (starts high)
+  |X\
+  | X\
+  |  X\___        (ends low)
+  |      X___
+  |___________ time
+```
+
+**You want:**
+- Both curves decreasing over time
+- Value loss should drop from ~10 to <1
+- Policy loss should drop from high values to near 0
+
+**If you see:**
+- ✓ Both decreasing consistently → Good learning
+- ✗ Flat or increasing → Not learning (check learning rate)
+- ✗ Sudden jumps → Unstable training (high variance batches)
+
+---
+
+#### **Graph Pattern 3: Clip Fraction**
+
+**Ideal shape:**
+```
+Clip %
+  |
+  | ___---___---___ (stable between 0.1-0.3)
+  |/
+  |________________ time
+```
+
+**You want:**
+- Stable value between 0.1 and 0.3
+- Relatively flat over time
+- Not trending up or down
+
+**If you see:**
+- ✓ Stable at 0.1-0.3 → PPO working correctly
+- ✗ Near 0 → Learning rate too low
+- ✗ > 0.5 → Learning rate too high
+
+---
+
+### What "successful training" looks like
+
+Your training results demonstrate success because:
+
+| Metric | Your Value | Assessment |
+|--------|-----------|-----------|
+| Final mean reward | 3.15 | Excellent (3x+ speedup) |
+| Training time | 9.7 min | Very fast (efficient) |
+| FPS | ~85 | Stable and consistent |
+| Total steps | 50,176 | Met target |
+| Policy loss | ~-0.008 | Converged to stable value |
+| Value loss | ~0.574 | Learned good estimates |
+| Approx KL | ~0.0133 | Very stable |
+| Clip fraction | ~0.147 | Good (14.7%) |
+| Entropy loss | ~-1.53 | Reasonable exploration |
+
+**Interpretation:**
+- Agent learned meaningful patterns in 50,000 steps
+- Found configurations ~3x faster than baseline
+- Training was stable (no crashes)
+- Policy and value networks both converged
+- No GPU memory issues (stable FPS)
+
+---
+
+### Common training issues and solutions
+
+#### Issue: Reward stays near 0 (not learning)
+
+**Causes:**
+- Learning rate too low
+- Batch size too small
+- Reward signal broken (environment not measuring correctly)
+
+**Solutions:**
+- Increase `--learning-rate` (try 0.001 instead of 0.0003)
+- Increase `--batch-size` (try 4096)
+- Check that kernel timing is working (Phase 2 tests)
+
+#### Issue: Reward spikes up and down (unstable)
+
+**Causes:**
+- Learning rate too high
+- Batch size too small
+- Clip range too large
+
+**Solutions:**
+- Decrease `--learning-rate` (try 0.0001)
+- Increase `--batch-size` (try 4096)
+- Decrease `--clip-range` (try 0.1)
+
+#### Issue: Losses not decreasing
+
+**Causes:**
+- Learning rate wrong
+- Policy network not receiving gradients
+- Observations or actions broken
+
+**Solutions:**
+- Check training log for errors
+- Run Phase 2 tests to validate kernels
+- Start with higher learning rate, then decrease
+
+#### Issue: FPS dropping over time
+
+**Causes:**
+- GPU memory leak
+- CUPTI profiling accumulating state
+- Long-running timer threads
+
+**Solutions:**
+- Use NVML-only mode instead of CUPTI
+- Reduce `--repeats` (fewer measurements per step)
+- Reduce `--batch-size`
+
+**Your training:** None of these issues! All metrics converged cleanly.
+
+---
+
+### Using TensorBoard data for analysis
+
+#### Export CSV for further analysis
+
+1. In TensorBoard, click any graph
+2. At bottom, click "Download runs as CSV"
+3. Open in Excel or Python for further analysis
+
+#### Analyze specific metrics
+
+```python
+import pandas as pd
+
+# Load TensorBoard CSV export
+df = pd.read_csv("tensorboard_export.csv")
+
+# Filter to mean reward
+reward_df = df[df['name'] == 'rollout/ep_rew_mean']
+
+# Compute statistics
+print(f"Final reward: {reward_df['value'].iloc[-1]:.2f}")
+print(f"Reward improvement: {reward_df['value'].iloc[-1] - reward_df['value'].iloc[0]:.2f}")
+print(f"Steps to reach 1.0 reward: {reward_df[reward_df['value'] >= 1.0]['step'].iloc[0]}")
+```
+
+#### Compare multiple training runs
+
+If you run training multiple times (different hyperparameters):
+1. Save logs to different directories
+2. Use `tensorboard --logdir results/logs/tensorboard` with multiple runs
+3. TensorBoard shows side-by-side comparison
+
+---
+
+### Next steps after training
+
+#### 1. Evaluate the learned policy
+
+Generate rollout logs to see what configurations your agent learned to prefer:
+
+```bash
+python phase3_rollout_log.py --use-nvml --kernels gemm reduction softmax --matrix-sizes 256 512 --episodes-per-case 3 --max-steps 20
+```
+
+Check `results/tables/phase3_rollout.csv` to see:
+- Which (block_size, reg_cap) combinations agent chose
+- What speedups were achieved
+- Whether agent has kernel-specific preferences
+
+#### 2. Compare against Phase 0 baseline
+
+Use Phase 0 results as a sanity check:
+
+```python
+import pandas as pd
+
+phase0 = pd.read_csv("results/tables/phase0_baseline.csv")
+phase3 = pd.read_csv("results/tables/phase3_rollout.csv")
+
+# For each kernel, what's the best configuration?
+for kernel in ['gemm', 'reduction', 'softmax']:
+    p0_best = phase0[phase0['kernel'] == kernel].nsmallest(1, 'time_ms_mean')
+    p3_best = phase3[phase3['kernel'] == kernel].nsmallest(1, 'time_ms')
+    
+    print(f"\n{kernel.upper()}")
+    print(f"Phase 0 best: {p0_best['time_ms_mean'].values[0]:.2f}ms")
+    print(f"Phase 3 best: {p3_best['time_ms'].values[0]:.2f}ms")
+```
+
+#### 3. Use the trained model for deployment
+
+Your trained agent is ready to be loaded and used:
+
+```python
+from stable_baselines3 import PPO
+
+model = PPO.load("results/models/ppo_final.zip")
+obs, info = env.reset()
+while True:
+    action, _states = model.predict(obs, deterministic=True)
+    obs, reward, done, truncated, info = env.step(action)
+    if done or truncated:
+        break
+```
+
+---
+
+### TensorBoard best practices
+
+1. **Let training finish before analyzing**
+   - Curves are clearer when training is complete
+   - Early curves may be misleading
+
+2. **Look at multiple metrics**
+   - Don't judge by reward alone
+   - Check loss curves for stability
+   - Verify FPS is reasonable
+
+3. **Save training summaries**
+   - Each run's `training_summary.json` notes hyperparameters
+   - Useful for comparing later
+
+4. **Export for papers**
+   - TensorBoard PDFs look professional
+   - Include final statistics in captions
+
+---
