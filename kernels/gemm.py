@@ -14,10 +14,16 @@ import numba as nb
 import numpy as np
 from numba import float32
 from functools import lru_cache
+import logging
 
+logger = logging.getLogger(__name__)
 
 # ── Tile size — must be a compile-time constant for CUDA ────────────
 TILE_SIZE = 16  # 16x16 tile = 256 threads per block
+
+# Valid register cap range (per NVIDIA architecture best practices)
+MIN_REG_CAP = 8
+MAX_REG_CAP = 256
 
 
 @cuda.jit
@@ -106,6 +112,27 @@ def get_gemm_kernel(block_size: int):
         raise ValueError(f"Unsupported block_size: {block_size}. Use 64, 128, 256, or 512.")
 
 
+def _validate_reg_cap(reg_cap: int) -> int:
+    """Validate and clamp register cap to safe range.
+    
+    Args:
+        reg_cap: Requested register cap (or 0 for default)
+        
+    Returns:
+        Validated register cap value
+    """
+    if reg_cap <= 0:
+        return 0  # Default (no cap)
+    
+    reg_cap = int(reg_cap)
+    if reg_cap < MIN_REG_CAP or reg_cap > MAX_REG_CAP:
+        clamped = max(MIN_REG_CAP, min(reg_cap, MAX_REG_CAP))
+        logger.warning(f"Register cap {reg_cap} out of range [{MIN_REG_CAP}, {MAX_REG_CAP}]; clamping to {clamped}")
+        return clamped
+    
+    return reg_cap
+
+
 @lru_cache(maxsize=None)
 def _get_gemm_kernel_with_reg_cap(block_size: int, reg_cap: int):
     """Return a GEMM kernel compiled with an optional register cap.
@@ -120,7 +147,21 @@ def _get_gemm_kernel_with_reg_cap(block_size: int, reg_cap: int):
         return base
 
     # Re-JIT the original Python function with a register cap.
-    return cuda.jit(max_registers=int(reg_cap))(base.py_func)
+    # Clamp to valid range before compilation
+    reg_cap = _validate_reg_cap(reg_cap)
+    if reg_cap <= 0:
+        return base
+    
+    return cuda.jit(max_registers=reg_cap)(base.py_func)
+
+
+def _clear_jit_cache_on_error():
+    """Clear the JIT cache if CUDA context was reset."""
+    try:
+        _get_gemm_kernel_with_reg_cap.cache_clear()
+        logger.debug("Cleared JIT cache due to CUDA context reset")
+    except Exception as e:
+        logger.debug(f"Could not clear JIT cache: {e}")
 
 
 def run_gemm(N: int, block_size: int = 256, warmup: int = 1, reg_cap: int = 0):
@@ -131,11 +172,17 @@ def run_gemm(N: int, block_size: int = 256, warmup: int = 1, reg_cap: int = 0):
         N: Matrix dimension (N×N)
         block_size: Threads per block
         warmup: Number of warmup iterations (triggers JIT compilation)
+        reg_cap: Register cap (0 for default)
 
     Returns:
         (A_dev, B_dev, C_dev, grid, block, kernel_fn)
+        
+    Note: Caller must synchronize and free A, B, C device arrays after use.
     """
-    kernel_fn = _get_gemm_kernel_with_reg_cap(block_size, int(reg_cap) if reg_cap else 0)
+    # Validate and clamp register cap
+    reg_cap = _validate_reg_cap(reg_cap)
+    
+    kernel_fn = _get_gemm_kernel_with_reg_cap(block_size, reg_cap)
 
     # Determine tile size from kernel
     tile = 8 if block_size == 64 else 16
@@ -149,8 +196,20 @@ def run_gemm(N: int, block_size: int = 256, warmup: int = 1, reg_cap: int = 0):
     block = (tile, tile)
 
     # Warmup (triggers JIT compilation)
-    for _ in range(warmup):
-        kernel_fn[grid, block](A, B, C, np.int32(N))
-    cuda.default_stream().synchronize()
+    try:
+        for _ in range(warmup):
+            kernel_fn[grid, block](A, B, C, np.int32(N))
+        cuda.default_stream().synchronize()
+    except Exception as e:
+        # If warmup fails, clean up and signal error
+        try:
+            A.copy_to_host()
+            B.copy_to_host()
+            C.copy_to_host()
+        except:
+            pass
+        logger.error(f"GEMM warmup failed with reg_cap={reg_cap}: {e}")
+        _clear_jit_cache_on_error()
+        raise
 
     return A, B, C, grid, block, kernel_fn

@@ -14,6 +14,13 @@ import numpy as np
 from numba import float32
 import math
 from functools import lru_cache
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Valid register cap range
+MIN_REG_CAP = 8
+MAX_REG_CAP = 256
 
 
 @cuda.jit
@@ -68,7 +75,19 @@ def get_softmax_kernel(reg_cap: int):
 
     if not reg_cap or reg_cap <= 0:
         return softmax_kernel
-    return cuda.jit(max_registers=int(reg_cap))(softmax_kernel.py_func)
+    
+    # Clamp to valid range
+    reg_cap = max(MIN_REG_CAP, min(int(reg_cap), MAX_REG_CAP))
+    return cuda.jit(max_registers=reg_cap)(softmax_kernel.py_func)
+
+
+def _clear_jit_cache_on_error():
+    """Clear the JIT cache if CUDA context was reset."""
+    try:
+        get_softmax_kernel.cache_clear()
+        logger.debug("Cleared softmax JIT cache due to CUDA context reset")
+    except Exception as e:
+        logger.debug(f"Could not clear JIT cache: {e}")
 
 
 def run_softmax(N: int, block_size: int = 256, warmup: int = 1, reg_cap: int = 0):
@@ -79,6 +98,7 @@ def run_softmax(N: int, block_size: int = 256, warmup: int = 1, reg_cap: int = 0
         N: Number of rows (and columns for square matrix)
         block_size: Threads per block
         warmup: Number of warmup iterations
+        reg_cap: Register cap (0 for default)
 
     Returns:
         (x_dev, out_dev, grid, block, kernel_fn)
@@ -93,8 +113,13 @@ def run_softmax(N: int, block_size: int = 256, warmup: int = 1, reg_cap: int = 0
 
     kernel_fn = get_softmax_kernel(int(reg_cap) if reg_cap else 0)
 
-    for _ in range(warmup):
-        kernel_fn[grid, block](x, out, np.int32(N), np.int32(N))
+    try:
+        for _ in range(warmup):
+            kernel_fn[grid, block](x, out, np.int32(N), np.int32(N))
+    except Exception as e:
+        logger.error(f"Softmax warmup failed with reg_cap={reg_cap}: {e}")
+        _clear_jit_cache_on_error()
+        raise
 
     # Ensure warmup finishes before returning buffers to caller.
     cuda.default_stream().synchronize()
