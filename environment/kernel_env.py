@@ -6,6 +6,8 @@ from typing import Any, Dict, Optional, Tuple
 
 import threading
 import time
+import logging
+import gc
 
 import gymnasium as gym
 import numpy as np
@@ -129,57 +131,119 @@ class KernelOptimizationEnv(gym.Env):
                 self._nvml = None
 
     def _prepare_kernel(self, kernel_name: str, block_size: int, reg_cap: int):
-        """Prepare kernel with CUDA context safety."""
+        """Prepare kernel with aggressive CUDA context safety.
+        
+        Note: Caller is responsible for freeing returned device arrays.
+        """
         try:
             n = int(self.cfg.matrix_size)
 
             if kernel_name == "gemm":
                 A, B, C, grid, block, kernel_fn = run_gemm(n, block_size=block_size, warmup=self.cfg.warmup, reg_cap=reg_cap)
                 args = (A, B, C, np.int32(n))
-                return grid, block, kernel_fn, args
+                return grid, block, kernel_fn, args, (A, B, C)  # Return device arrays for cleanup
 
             if kernel_name == "reduction":
                 total = int(n * n)
                 x, out, grid, block, kernel_fn = run_reduction(total, block_size=block_size, warmup=self.cfg.warmup, reg_cap=reg_cap)
                 args = (x, out, np.int32(total))
-                return grid, block, kernel_fn, args
+                return grid, block, kernel_fn, args, (x, out)
 
             if kernel_name == "softmax":
                 x, out, grid, block, kernel_fn = run_softmax(n, block_size=block_size, warmup=self.cfg.warmup, reg_cap=reg_cap)
                 args = (x, out, np.int32(n), np.int32(n))
-                return grid, block, kernel_fn, args
+                return grid, block, kernel_fn, args, (x, out)
 
             raise ValueError(f"Unknown kernel: {kernel_name}")
-        except OSError as e:
-            if "access violation" in str(e) or "CUDA" in str(e):
+        except (OSError, RuntimeError) as e:
+            error_msg = str(e).lower()
+            if "access violation" in error_msg or "cuda" in error_msg or "invalid handle" in error_msg:
                 import numba.cuda as cuda
-                cuda.close()  # Reset CUDA context
-                time.sleep(0.1)  # Brief pause for driver to stabilize
-                # Retry once
-                n = int(self.cfg.matrix_size)
-                if kernel_name == "gemm":
-                    A, B, C, grid, block, kernel_fn = run_gemm(n, block_size=block_size, warmup=self.cfg.warmup, reg_cap=reg_cap)
-                    args = (A, B, C, np.int32(n))
-                    return grid, block, kernel_fn, args
-                else:
+                log = logging.getLogger(__name__)
+                log.warning(f"CUDA context corrupted; attempting recovery. Error: {e}")
+                
+                # Aggressive context reset
+                try:
+                    cuda.close()
+                    log.info("Closed CUDA context")
+                except Exception as close_err:
+                    log.debug(f"Error closing context: {close_err}")
+                
+                # Clear kernel caches from all kernel modules
+                try:
+                    from kernels.gemm import _clear_jit_cache_on_error as clear_gemm
+                    from kernels.reduction import _clear_jit_cache_on_error as clear_reduction
+                    from kernels.softmax import _clear_jit_cache_on_error as clear_softmax
+                    clear_gemm()
+                    clear_reduction()
+                    clear_softmax()
+                    log.info("Cleared JIT caches for all kernels")
+                except Exception as cache_err:
+                    log.debug(f"Error clearing caches: {cache_err}")
+                
+                # Force garbage collection to reclaim GPU memory
+                gc.collect()
+                time.sleep(0.3)  # Longer wait for full driver recovery
+                
+                # Retry once with fresh compilation
+                try:
+                    n = int(self.cfg.matrix_size)
+                    if kernel_name == "gemm":
+                        A, B, C, grid, block, kernel_fn = run_gemm(n, block_size=block_size, warmup=self.cfg.warmup, reg_cap=reg_cap)
+                        args = (A, B, C, np.int32(n))
+                        return grid, block, kernel_fn, args, (A, B, C)
+                    elif kernel_name == "reduction":
+                        total = int(n * n)
+                        x, out, grid, block, kernel_fn = run_reduction(total, block_size=block_size, warmup=self.cfg.warmup, reg_cap=reg_cap)
+                        args = (x, out, np.int32(total))
+                        return grid, block, kernel_fn, args, (x, out)
+                    elif kernel_name == "softmax":
+                        x, out, grid, block, kernel_fn = run_softmax(n, block_size=block_size, warmup=self.cfg.warmup, reg_cap=reg_cap)
+                        args = (x, out, np.int32(n), np.int32(n))
+                        return grid, block, kernel_fn, args, (x, out)
+                except Exception as retry_err:
+                    log.error(f"Retry after context reset also failed: {retry_err}")
                     raise
             raise
 
     def _measure_time_ms(self, kernel_name: str, block_size: int, reg_cap: int) -> float:
-        """Measure kernel time with graceful fallback on CUDA errors."""
+        """Measure kernel time with explicit GPU memory cleanup.
+        
+        This function ensures device arrays are freed after measurement to prevent
+        GPU memory exhaustion during long training runs.
+        """
+        device_arrays = None
         try:
-            grid, block, kernel_fn, args = self._prepare_kernel(kernel_name, block_size, reg_cap)
+            result = self._prepare_kernel(kernel_name, block_size, reg_cap)
+            if len(result) == 5:
+                grid, block, kernel_fn, args, device_arrays = result
+            else:
+                # Fallback for compatibility
+                grid, block, kernel_fn, args = result[:4]
+                device_arrays = None
+            
             timing = time_kernel(kernel_fn, grid, block, args, warmup=0, repeats=self.cfg.repeats)
-            return float(timing.mean_ms)
+            self._last_valid_time_ms = float(timing.mean_ms)
+            return self._last_valid_time_ms
+            
         except (OSError, IndexError, RuntimeError) as e:
             # CUDA context degradation - return cached value or neutral estimate
             error_msg = str(e).lower()
-            if "access violation" in error_msg or "list index" in error_msg or "no successful" in error_msg:
+            if "access violation" in error_msg or "list index" in error_msg or "no successful" in error_msg or "invalid handle" in error_msg:
                 # Return a fallback time (slightly above baseline to discourage this config)
                 fallback = getattr(self, '_last_valid_time_ms', 1.0)  # Default 1ms if no history
                 return fallback * 1.05  # Slightly penalize unknown configs
             else:
                 raise
+        finally:
+            # Explicitly free device arrays to prevent memory leak
+            if device_arrays is not None:
+                try:
+                    import numba.cuda as cuda
+                    cuda.default_stream().synchronize()
+                    gc.collect()  # Force garbage collection
+                except:
+                    pass  # If cleanup fails, just continue
 
     def _collect_cupti_norm(self, kernel_name: str, block_size: int, reg_cap: int) -> Tuple[np.ndarray, str, bool]:
         keys = tuple(self.obs_spec.cupti_keys)
@@ -315,6 +379,16 @@ cuda.default_stream().synchronize()
         super().reset(seed=seed)
         if seed is not None:
             self.seed(seed)
+
+        # Aggressive GPU memory cleanup before new episode
+        try:
+            import numba.cuda as cuda
+            gc.collect()
+            cuda.default_stream().synchronize()
+            log = logging.getLogger(__name__)
+            log.debug("Cleaned GPU memory before episode reset")
+        except Exception as e:
+            pass  # Non-critical
 
         self._step = 0
         self._kernel_name = self._pick_kernel_name()

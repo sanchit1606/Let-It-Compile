@@ -17,6 +17,7 @@ Features:
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import logging
 import time
@@ -26,7 +27,7 @@ from typing import Optional
 import numpy as np
 import torch
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, EvalCallback
 
 from environment.kernel_env import EpisodeConfig, KernelOptimizationEnv
 
@@ -58,6 +59,26 @@ def setup_logging() -> logging.Logger:
         logger.addHandler(ch)
     
     return logger
+
+
+class GCCallback(BaseCallback):
+    """Periodically perform garbage collection to prevent GPU memory degradation."""
+    
+    def __init__(self, interval: int = 1000):
+        super().__init__()
+        self.interval = interval
+        self._logger = logging.getLogger(__name__)
+    
+    def _on_step(self) -> bool:
+        if self.n_calls % self.interval == 0:
+            gc.collect()
+            try:
+                import numba.cuda as cuda
+                cuda.default_stream().synchronize()
+                self._logger.debug(f"GC cleanup at step {self.n_calls}")
+            except Exception as e:
+                self._logger.debug(f"GC cleanup error at step {self.n_calls}: {e}")
+        return True
 
 
 def train_ppo(
@@ -163,7 +184,10 @@ def train_ppo(
         name_prefix="ppo_checkpoint",
     )
     
-    callbacks = [checkpoint_callback]
+    # Garbage collection callback to prevent CUDA memory degradation
+    gc_callback = GCCallback(interval=500)  # Clean up every 500 steps
+    
+    callbacks = [checkpoint_callback, gc_callback]
     if eval_callback is not None:
         callbacks.append(eval_callback)
     

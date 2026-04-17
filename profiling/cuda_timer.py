@@ -7,6 +7,7 @@ kernel timings without CPU-side scheduling noise.
 import numba.cuda as cuda
 import numpy as np
 import time
+import gc
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import List
@@ -63,10 +64,11 @@ def time_kernel(kernel_fn, grid, block, args: tuple, warmup: int = 3, repeats: i
                 end_evt.record()
                 end_evt.synchronize()
                 times.append(cuda.event_elapsed_time(start_evt, end_evt))
-        except Exception:
+        except Exception as e:
             # Disable event timing for the remainder of this process.
             _EVENT_TIMING_OK = False
             times.clear()
+            gc.collect()  # Try to recover GPU memory
 
     if not times:
         # Fallback: CPU-timed measurement with CUDA synchronization
@@ -77,8 +79,11 @@ def time_kernel(kernel_fn, grid, block, args: tuple, warmup: int = 3, repeats: i
                 cuda.default_stream().synchronize()
                 end_t = time.perf_counter()
                 times.append((end_t - start_t) * 1000.0)
-            except (OSError, IndexError) as e:
+            except (OSError, IndexError, RuntimeError) as e:
                 # CUDA context issues - skip this repeat (don't crash)
+                # Try to recover on persistent context issues
+                if "access violation" in str(e).lower() or "invalid handle" in str(e).lower():
+                    gc.collect()
                 continue
 
     if not times:

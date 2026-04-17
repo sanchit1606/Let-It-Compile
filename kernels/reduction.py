@@ -10,6 +10,13 @@ import numba.cuda as cuda
 import numpy as np
 from numba import float32
 from functools import lru_cache
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Valid register cap range
+MIN_REG_CAP = 8
+MAX_REG_CAP = 256
 
 
 @cuda.jit
@@ -52,7 +59,19 @@ def get_reduction_kernel(reg_cap: int):
 
     if not reg_cap or reg_cap <= 0:
         return reduction_kernel
-    return cuda.jit(max_registers=int(reg_cap))(reduction_kernel.py_func)
+    
+    # Clamp to valid range
+    reg_cap = max(MIN_REG_CAP, min(int(reg_cap), MAX_REG_CAP))
+    return cuda.jit(max_registers=reg_cap)(reduction_kernel.py_func)
+
+
+def _clear_jit_cache_on_error():
+    """Clear the JIT cache if CUDA context was reset."""
+    try:
+        get_reduction_kernel.cache_clear()
+        logger.debug("Cleared reduction JIT cache due to CUDA context reset")
+    except Exception as e:
+        logger.debug(f"Could not clear JIT cache: {e}")
 
 
 def run_reduction(N: int, block_size: int = 256, warmup: int = 1, reg_cap: int = 0):
@@ -63,6 +82,7 @@ def run_reduction(N: int, block_size: int = 256, warmup: int = 1, reg_cap: int =
         N: Total number of elements to reduce
         block_size: Threads per block
         warmup: Number of warmup iterations
+        reg_cap: Register cap (0 for default)
 
     Returns:
         (x_dev, out_dev, grid, block, kernel_fn)
@@ -77,14 +97,30 @@ def run_reduction(N: int, block_size: int = 256, warmup: int = 1, reg_cap: int =
 
     kernel_fn = get_reduction_kernel(int(reg_cap) if reg_cap else 0)
 
-    for _ in range(warmup):
-        # Reset accumulator before each warmup launch.
-        out.copy_to_device(out_host_zero)
-        kernel_fn[grid, block](x, out, np.int32(N))
-    cuda.default_stream().synchronize()
+    try:
+        for _ in range(warmup):
+            # Recreate output array instead of calling copy_to_device() which can fail
+            # on corrupted contexts
+            try:
+                # Try copy_to_device first (faster)
+                out.copy_to_device(out_host_zero)
+            except (OSError, RuntimeError):
+                # If context is degraded, recreate the array
+                out = cuda.to_device(out_host_zero)
+            
+            kernel_fn[grid, block](x, out, np.int32(N))
+        cuda.default_stream().synchronize()
+    except Exception as e:
+        logger.error(f"Reduction warmup failed with reg_cap={reg_cap}: {e}")
+        _clear_jit_cache_on_error()
+        raise
 
     # Important: the reduction uses atomic accumulation into out[0].
     # Ensure the returned output buffer is clean for the caller's measured launch.
-    out.copy_to_device(out_host_zero)
+    try:
+        out.copy_to_device(out_host_zero)
+    except (OSError, RuntimeError):
+        # Context degradation - recreate
+        out = cuda.to_device(out_host_zero)
 
     return x, out, grid, block, kernel_fn
