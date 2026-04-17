@@ -1,5 +1,39 @@
 /* Navigation and interactivity */
 
+async function updateWebsiteVisitCounter() {
+    const counterEl = document.getElementById('website-visit-count');
+    if (!counterEl) return;
+
+    // Avoid counting local file previews or unrelated hosts.
+    const host = (window.location && window.location.hostname) ? window.location.hostname.toLowerCase() : '';
+    const path = (window.location && window.location.pathname) ? window.location.pathname.toLowerCase() : '';
+    const shouldCount =
+        (host === 'sanchit1606.github.io' && path.startsWith('/let-it-compile')) ||
+        host === 'letitcompile.dev' ||
+        host === 'www.letitcompile.dev';
+
+    if (!shouldCount) {
+        counterEl.textContent = '—';
+        return;
+    }
+
+    counterEl.textContent = '…';
+
+    // Lightweight persistent counter service for static sites.
+    // If you ever want a self-hosted counter, replace this endpoint with your own API.
+    const url = 'https://api.countapi.xyz/hit/sanchit1606.github.io/Let-It-Compile';
+
+    try {
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) throw new Error(`counter http ${res.status}`);
+        const data = await res.json();
+        const value = (data && typeof data.value === 'number') ? data.value : null;
+        counterEl.textContent = (value === null) ? 'N/A' : value.toLocaleString();
+    } catch (err) {
+        counterEl.textContent = 'N/A';
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     const navLinks = document.querySelectorAll('.nav-link');
     const docSections = document.querySelectorAll('.doc-section');
@@ -76,6 +110,9 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
     });
+
+    // Update visits counter (non-blocking).
+    updateWebsiteVisitCounter();
 });
 
 // Keyboard navigation support
