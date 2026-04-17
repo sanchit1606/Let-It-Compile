@@ -9,7 +9,7 @@
 [![CUDA](https://img.shields.io/badge/CUDA-12.x-76B900?logo=nvidia)](https://developer.nvidia.com/cuda-toolkit)
 [![Gymnasium](https://img.shields.io/badge/Gymnasium-RL-orange)](https://gymnasium.farama.org/)
 
-**Research Goal:** Demonstrate that an RL agent conditioned on CUPTI hardware counter signals can adaptively select GPU compilation + launch parameters (register cap / `--maxrregcount`, block size, shared memory allocation), outperforming PTXAS static defaults on NVIDIA RTX 3050 Ti.
+**Research Goal:** Demonstrate that a reinforcement learning (RL) agent, conditioned on CUPTI hardware counter signals, can adaptively select GPU compilation and launch parameters (e.g., register cap via --maxrregcount, block size, and shared memory allocation) to outperform PTXAS static defaults across multiple NVIDIA GPU architectures, including RTX 3050 Ti (Ampere), GeForce RTX 4060 (Ada Lovelace), and NVIDIA L40 (Ada Lovelace), with further evaluation planned on data center-class GPUs such as A100 and H100 for real-world, large-scale CUDA workloads.
 
 </div>
 
