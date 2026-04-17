@@ -29,6 +29,11 @@ jobs:
           set -euo pipefail
           mkdir -p site
           cp docs/index.html site/index.html
+          # Deploy required static assets referenced by index.html
+          cp docs/styles.css site/styles.css
+          cp docs/script.js site/script.js
+          # Optional custom domain
+          if [ -f docs/CNAME ]; then cp docs/CNAME site/CNAME; fi
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
