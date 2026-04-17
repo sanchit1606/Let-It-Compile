@@ -27,7 +27,7 @@ This project implements a **7-phase prototype** for automated GPU kernel compila
 6. **Phase 5** - BiLSTM Phase Detector (Optional: classify kernel phases)
 7. **Phase 6** - GNN IR Encoder (Optional: kernel structure encoding)
 
-## 📖 Documentation
+## Documentation
 
 Complete documentation is available in the `docs/` folder. Open it in your browser:
 
