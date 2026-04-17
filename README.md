@@ -96,18 +96,6 @@ python check-for-packages.py
 
 Expected output: All packages installed, CUDA available, RTX 3050 Ti detected.
 
-## Quick Start
-
-### ⚠️ IMPORTANT: Read First
-
-**Do NOT use `--use-cupti` for full PPO training.** It's extremely slow on Windows (70-400 hours for 50k steps).
-
-**Recommended workflow:**
-1. Train with NVML-only: `--use-nvml` (15-30 min)
-2. Analyze with CUPTI separately: `phase3_rollout_log.py --use-cupti` (30-60 min)
-
-See `CUPTI_PERFORMANCE_WARNING.md` and `QUICK_START_CORRECTED.md` for details.
-
 ### Phase 0: Foundational Experiment (Start Here)
 
 ```bash
