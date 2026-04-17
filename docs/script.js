@@ -1,8 +1,8 @@
 /* Navigation and interactivity */
 
 async function updateWebsiteVisitCounter() {
-    const counterEl = document.getElementById('website-visit-count');
-    if (!counterEl) return;
+    const badgeEl = document.getElementById('website-visit-badge');
+    if (!badgeEl) return;
 
     // Avoid counting local file previews or unrelated hosts.
     const host = (window.location && window.location.hostname) ? window.location.hostname.toLowerCase() : '';
@@ -13,25 +13,17 @@ async function updateWebsiteVisitCounter() {
         host === 'www.letitcompile.dev';
 
     if (!shouldCount) {
-        counterEl.textContent = '—';
+        badgeEl.removeAttribute('src');
+        badgeEl.setAttribute('alt', 'Website visits counter (disabled on this host)');
         return;
     }
 
-    counterEl.textContent = '…';
-
-    // Lightweight persistent counter service for static sites.
-    // If you ever want a self-hosted counter, replace this endpoint with your own API.
-    const url = 'https://api.countapi.xyz/hit/sanchit1606.github.io/Let-It-Compile';
-
-    try {
-        const res = await fetch(url, { cache: 'no-store' });
-        if (!res.ok) throw new Error(`counter http ${res.status}`);
-        const data = await res.json();
-        const value = (data && typeof data.value === 'number') ? data.value : null;
-        counterEl.textContent = (value === null) ? 'N/A' : value.toLocaleString();
-    } catch (err) {
-        counterEl.textContent = 'N/A';
-    }
+    // Use an image-based counter so refresh/reload increments reliably even when
+    // cross-origin fetch() calls are blocked by extensions/network policies.
+    // This increments once per page load.
+    const siteUrl = encodeURIComponent('https://sanchit1606.github.io/Let-It-Compile/');
+    const cacheBust = Date.now();
+    badgeEl.src = `https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=${siteUrl}&t=${cacheBust}`;
 }
 
 document.addEventListener('DOMContentLoaded', function() {

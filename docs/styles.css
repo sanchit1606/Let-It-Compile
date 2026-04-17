@@ -97,6 +97,12 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
+.visit-counter-badge {
+    display: block;
+    height: 18px;
+    width: auto;
+}
+
 .sidebar-nav h3 {
     font-size: 12px;
     color: var(--nvidia-green);
