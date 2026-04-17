@@ -199,7 +199,8 @@ def run_gemm(N: int, block_size: int = 256, warmup: int = 1, reg_cap: int = 0):
     try:
         for _ in range(warmup):
             kernel_fn[grid, block](A, B, C, np.int32(N))
-        cuda.default_stream().synchronize()
+            # Synchronize after each warmup iteration to detect errors early
+            cuda.default_stream().synchronize()
     except Exception as e:
         # If warmup fails, clean up and signal error
         try:
