@@ -20,6 +20,7 @@ import argparse
 import gc
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -28,6 +29,7 @@ import numpy as np
 import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, EvalCallback
+from stable_baselines3.common.logger import configure as sb3_configure_logger
 
 from environment.kernel_env import EpisodeConfig, KernelOptimizationEnv
 
@@ -38,13 +40,48 @@ _MODELS_DIR = _RESULTS_DIR / "models"
 _LOGS_DIR = _RESULTS_DIR / "logs"
 
 
-def setup_logging() -> logging.Logger:
-    _LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    
-    logger = logging.getLogger("train_rl")
+def _slugify_device_name(device_name: str) -> str:
+    name = device_name.lower()
+    for token in ("nvidia", "geforce", "laptop gpu", "graphics", "gpu"):
+        name = name.replace(token, " ")
+    name = re.sub(r"\s+", " ", name).strip()
+
+    m = re.search(r"\b(rtx|gtx)\s*([0-9]{3,4})\b", name)
+    if m:
+        return f"{m.group(1)}{m.group(2)}"
+
+    # Fallback: keep only alphanumerics.
+    compact = re.sub(r"[^a-z0-9]+", "", name)
+    return compact[:24] if compact else "device"
+
+
+def _allocate_run_tag(*, base: str, roots: list[Path]) -> str:
+    used: set[int] = set()
+    pat = re.compile(rf"^{re.escape(base)}_(\d{{2}})\b")
+    for root in roots:
+        if not root.exists():
+            continue
+        for p in root.iterdir():
+            m = pat.match(p.name)
+            if m:
+                used.add(int(m.group(1)))
+
+    run_idx = 1
+    while run_idx in used:
+        run_idx += 1
+    return f"{base}_{run_idx:02d}"
+
+
+def setup_logging(*, run_log_dir: Path, run_tag: str) -> logging.Logger:
+    run_log_dir.mkdir(parents=True, exist_ok=True)
+
+    logger = logging.getLogger(f"train_rl.{run_tag}")
     logger.setLevel(logging.INFO)
+
+    logger.handlers.clear()
+    logger.propagate = False
     
-    fh = logging.FileHandler(_LOGS_DIR / "train_rl.log")
+    fh = logging.FileHandler(run_log_dir / "train_rl.log")
     fh.setLevel(logging.INFO)
     
     ch = logging.StreamHandler()
@@ -54,9 +91,8 @@ def setup_logging() -> logging.Logger:
     fh.setFormatter(formatter)
     ch.setFormatter(formatter)
     
-    if not logger.handlers:
-        logger.addHandler(fh)
-        logger.addHandler(ch)
+    logger.addHandler(fh)
+    logger.addHandler(ch)
     
     return logger
 
@@ -100,8 +136,24 @@ def train_ppo(
     eval_freq: Optional[int],
     n_eval_episodes: Optional[int],
 ) -> None:
-    logger = setup_logging()
+    if torch.cuda.is_available():
+        gpu_name = torch.cuda.get_device_name(0)
+        gpu_slug = _slugify_device_name(gpu_name)
+    else:
+        gpu_name = "cpu"
+        gpu_slug = "cpu"
+
+    run_tag = _allocate_run_tag(
+        base=gpu_slug,
+        roots=[_MODELS_DIR, _LOGS_DIR, _LOGS_DIR / "tensorboard"],
+    )
+    run_log_dir = _LOGS_DIR / run_tag
+    tb_dir = (_LOGS_DIR / "tensorboard" / run_tag)
+
+    logger = setup_logging(run_log_dir=run_log_dir, run_tag=run_tag)
     _MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    (_LOGS_DIR / "tensorboard").mkdir(parents=True, exist_ok=True)
+    tb_dir.mkdir(parents=True, exist_ok=True)
     
     logger.info("=" * 80)
     logger.info("Phase 3: PPO Training (Stable-Baselines3)")
@@ -116,6 +168,8 @@ def train_ppo(
     logger.info(f"Entropy coeff: {entropy_coeff}")
     logger.info("CUPTI enabled: {}".format(use_cupti))
     logger.info("NVML enabled: {}".format(use_nvml))
+    logger.info(f"Run tag: {run_tag}")
+    logger.info(f"Device name: {gpu_name}")
     
     # **WARNING: CUPTI during full training is NOT RECOMMENDED on Windows**
     if use_cupti and total_steps > 5000:
@@ -169,8 +223,8 @@ def train_ppo(
         
         eval_callback = EvalCallback(
             eval_env,
-            best_model_save_path=str(_MODELS_DIR / "best"),
-            log_path=str(_LOGS_DIR),
+            best_model_save_path=str(_MODELS_DIR / f"{run_tag}_best"),
+            log_path=str(run_log_dir),
             eval_freq=eval_freq,
             n_eval_episodes=n_eval_episodes,
             deterministic=False,
@@ -181,7 +235,7 @@ def train_ppo(
     checkpoint_callback = CheckpointCallback(
         save_freq=max(1, total_steps // 10),  # ~10 checkpoints over training
         save_path=str(_MODELS_DIR),
-        name_prefix="ppo_checkpoint",
+        name_prefix=run_tag,
     )
     
     # Garbage collection callback to prevent CUDA memory degradation
@@ -216,8 +270,16 @@ def train_ppo(
         clip_range=clip_range,
         ent_coef=entropy_coeff,
         verbose=1,
-        tensorboard_log=str(_LOGS_DIR / "tensorboard"),
+        tensorboard_log=None,
         device=device,
+    )
+
+    # Use a stable, GPU-tagged output directory for SB3 logs to avoid PPO_1 / PPO_2 numbering.
+    model.set_logger(
+        sb3_configure_logger(
+            folder=str(tb_dir),
+            format_strings=["stdout", "csv", "tensorboard"],
+        )
     )
     
     logger.info(f"Starting training for {total_steps} steps...")
@@ -229,10 +291,12 @@ def train_ppo(
     )
     
     logger.info(f"Training complete. Saving final model...")
-    model.save(str(_MODELS_DIR / "ppo_final"))
+    model.save(str(_MODELS_DIR / run_tag))
     
     # Summary artifact
     summary = {
+        "run_tag": run_tag,
+        "device_name": gpu_name,
         "total_steps": total_steps,
         "batch_size": batch_size,
         "learning_rate": learning_rate,
@@ -246,12 +310,13 @@ def train_ppo(
         "use_nvml": use_nvml,
         "warmup": warmup,
         "repeats": repeats,
-        "model_path": str(_MODELS_DIR / "ppo_final.zip"),
-        "best_model_path": str(_MODELS_DIR / "best" / "best_model.zip") if eval_callback else None,
-        "log_path": str(_LOGS_DIR),
+        "model_path": str(_MODELS_DIR / f"{run_tag}.zip"),
+        "best_model_path": str(_MODELS_DIR / f"{run_tag}_best" / "best_model.zip") if eval_callback else None,
+        "log_path": str(run_log_dir),
+        "tensorboard_path": str(tb_dir),
     }
     
-    summary_path = _LOGS_DIR / "training_summary.json"
+    summary_path = run_log_dir / "training_summary.json"
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
     
