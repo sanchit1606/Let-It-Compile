@@ -1,40 +1,5 @@
 /* Navigation and interactivity */
 
-function updateWebsiteVisitCounter() {
-    const badgeEl = document.getElementById('website-visit-badge');
-    if (!badgeEl) return;
-
-    // Avoid counting local file previews or unrelated hosts.
-    const host = (window.location && window.location.hostname) ? window.location.hostname.toLowerCase() : '';
-    const pathname = (window.location && window.location.pathname) ? window.location.pathname.toLowerCase() : '';
-    const shouldCount =
-        (host === 'sanchit1606.github.io' && pathname.startsWith('/let-it-compile')) ||
-        host === 'letitcompile.dev' ||
-        host === 'www.letitcompile.dev';
-
-    if (!shouldCount) {
-        badgeEl.removeAttribute('src');
-        badgeEl.setAttribute('aria-hidden', 'true');
-        return;
-    }
-
-    // IMPORTANT: Most free "hit" APIs do NOT allow browser fetch() due to CORS.
-    // Badges work because <img> loads are not subject to the same CORS read restrictions.
-    // We use shields.io + hits.dwyl.com JSON as the backing counter and cache-bust the hits URL
-    // so refreshes increment reliably.
-    const hitsUrl = `https://hits.dwyl.com/sanchit1606/Let-It-Compile.json?t=${Date.now()}`;
-    const shieldsEndpointUrl = `https://img.shields.io/endpoint?url=${encodeURIComponent(hitsUrl)}&label=&style=flat`;
-
-    badgeEl.onerror = () => {
-        // Fallback: render the default hits.dwyl badge directly (still increments, but includes a label).
-        badgeEl.onerror = null;
-        badgeEl.src = `https://hits.dwyl.com/sanchit1606/Let-It-Compile.svg?t=${Date.now()}`;
-    };
-
-    badgeEl.src = shieldsEndpointUrl;
-    badgeEl.removeAttribute('aria-hidden');
-}
-
 document.addEventListener('DOMContentLoaded', function() {
     const navLinks = document.querySelectorAll('.nav-link');
     const docSections = document.querySelectorAll('.doc-section');
@@ -112,8 +77,6 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
-    // Update visits counter (non-blocking).
-    updateWebsiteVisitCounter();
 });
 
 // Keyboard navigation support

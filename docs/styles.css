@@ -70,41 +70,6 @@ body {
     letter-spacing: 1px;
 }
 
-.visit-counter {
-    margin-top: 12px;
-    padding: 10px 12px;
-    background-color: var(--highlight-bg);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 12px;
-}
-
-.visit-counter-label {
-    font-size: 11px;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    font-weight: 600;
-}
-
-.visit-counter-value {
-    font-size: 16px;
-    font-weight: 700;
-    color: var(--nvidia-green);
-    font-variant-numeric: tabular-nums;
-}
-
-.visit-counter-badge {
-    height: 18px;
-    width: auto;
-    min-width: 44px;
-    flex-shrink: 0;
-    image-rendering: -webkit-optimize-contrast;
-}
-
 
 .sidebar-nav h3 {
     font-size: 12px;
