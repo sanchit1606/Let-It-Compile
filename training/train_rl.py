@@ -72,7 +72,7 @@ def _allocate_run_tag(*, base: str, roots: list[Path]) -> str:
     return f"{base}_{run_idx:02d}"
 
 
-def setup_logging(*, run_log_dir: Path, run_tag: str) -> logging.Logger:
+def setup_logging(*, run_log_dir: Path, run_tag: str, gpu_tag: str) -> logging.Logger:
     run_log_dir.mkdir(parents=True, exist_ok=True)
 
     logger = logging.getLogger(f"train_rl.{run_tag}")
@@ -81,7 +81,7 @@ def setup_logging(*, run_log_dir: Path, run_tag: str) -> logging.Logger:
     logger.handlers.clear()
     logger.propagate = False
     
-    fh = logging.FileHandler(run_log_dir / "train_rl.log")
+    fh = logging.FileHandler(run_log_dir / f"train_rl_{gpu_tag}.log")
     fh.setLevel(logging.INFO)
     
     ch = logging.StreamHandler()
@@ -95,6 +95,60 @@ def setup_logging(*, run_log_dir: Path, run_tag: str) -> logging.Logger:
     logger.addHandler(ch)
     
     return logger
+
+
+def _tag_run_artifacts(*, run_log_dir: Path, run_tag: str, gpu_tag: str) -> None:
+    """Rename known tool-generated artifacts to include the GPU run_tag.
+
+    Some Stable-Baselines3 callbacks write fixed filenames (e.g., evaluations.npz).
+    We rename these after training finishes to keep all result files GPU-tagged.
+    """
+
+    renames = [
+        ("evaluations.npz", f"evaluations_{gpu_tag}.npz"),
+        ("monitor.csv", f"monitor_{gpu_tag}.csv"),
+    ]
+    for src_name, dst_name in renames:
+        src = run_log_dir / src_name
+        if not src.exists():
+            continue
+        dst = run_log_dir / dst_name
+        if dst.exists():
+            continue
+        try:
+            src.rename(dst)
+        except OSError:
+            # Best-effort only: don't fail training teardown if the OS locks files.
+            continue
+
+
+def _tag_tensorboard_artifacts(*, tb_dir: Path, run_tag: str, gpu_tag: str) -> None:
+    """Best-effort renaming of TensorBoard/CSV artifacts to include the GPU run_tag."""
+
+    if not tb_dir.exists():
+        return
+
+    # CSV output (SB3) is typically progress.csv.
+    progress = tb_dir / "progress.csv"
+    if progress.exists():
+        tagged = tb_dir / f"progress_{gpu_tag}.csv"
+        if not tagged.exists():
+            try:
+                progress.rename(tagged)
+            except OSError:
+                pass
+
+    # TensorBoard event files are safe to rename for TensorBoard, but may be locked.
+    for event_file in tb_dir.glob("events.out.tfevents.*"):
+        if event_file.name.startswith(f"{gpu_tag}_"):
+            continue
+        tagged = tb_dir / f"{gpu_tag}_{event_file.name}"
+        if tagged.exists():
+            continue
+        try:
+            event_file.rename(tagged)
+        except OSError:
+            pass
 
 
 class GCCallback(BaseCallback):
@@ -147,10 +201,11 @@ def train_ppo(
         base=gpu_slug,
         roots=[_MODELS_DIR, _LOGS_DIR, _LOGS_DIR / "tensorboard"],
     )
+    gpu_tag = gpu_slug
     run_log_dir = _LOGS_DIR / run_tag
     tb_dir = (_LOGS_DIR / "tensorboard" / run_tag)
 
-    logger = setup_logging(run_log_dir=run_log_dir, run_tag=run_tag)
+    logger = setup_logging(run_log_dir=run_log_dir, run_tag=run_tag, gpu_tag=gpu_tag)
     _MODELS_DIR.mkdir(parents=True, exist_ok=True)
     (_LOGS_DIR / "tensorboard").mkdir(parents=True, exist_ok=True)
     tb_dir.mkdir(parents=True, exist_ok=True)
@@ -289,7 +344,24 @@ def train_ppo(
         callback=callbacks,
         progress_bar=True,
     )
+
+    # Post-process tool-generated artifacts (fixed filenames) to include the run tag.
+    _tag_run_artifacts(run_log_dir=run_log_dir, run_tag=run_tag, gpu_tag=gpu_tag)
+    _tag_tensorboard_artifacts(tb_dir=tb_dir, run_tag=run_tag, gpu_tag=gpu_tag)
     
+    # If evaluation was enabled, tag the best model filename too.
+    best_model_path = None
+    if eval_callback is not None:
+        best_dir = _MODELS_DIR / f"{run_tag}_best"
+        src_best = best_dir / "best_model.zip"
+        dst_best = best_dir / f"best_model_{gpu_tag}.zip"
+        if src_best.exists() and not dst_best.exists():
+            try:
+                src_best.rename(dst_best)
+            except OSError:
+                pass
+        best_model_path = dst_best if dst_best.exists() else (src_best if src_best.exists() else None)
+
     logger.info(f"Training complete. Saving final model...")
     model.save(str(_MODELS_DIR / run_tag))
     
@@ -311,12 +383,12 @@ def train_ppo(
         "warmup": warmup,
         "repeats": repeats,
         "model_path": str(_MODELS_DIR / f"{run_tag}.zip"),
-        "best_model_path": str(_MODELS_DIR / f"{run_tag}_best" / "best_model.zip") if eval_callback else None,
+        "best_model_path": str(best_model_path) if best_model_path is not None else None,
         "log_path": str(run_log_dir),
         "tensorboard_path": str(tb_dir),
     }
     
-    summary_path = run_log_dir / "training_summary.json"
+    summary_path = run_log_dir / f"training_summary_{gpu_tag}.json"
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
     

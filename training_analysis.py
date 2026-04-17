@@ -10,13 +10,21 @@ _REPO_ROOT = Path(__file__).resolve().parent
 _LOGS_DIR = _REPO_ROOT / "results" / "logs"
 _TB_DIR = _LOGS_DIR / "tensorboard"
 
+
+def _find_latest_training_summary(logs_dir: Path) -> Path | None:
+    candidates = list(logs_dir.glob("*/training_summary_*.json"))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
 print("\n" + "=" * 80)
 print("TRAINING ANALYSIS - PPO Agent Performance")
 print("=" * 80)
 
 # Read training summary
-summary_path = _LOGS_DIR / "training_summary.json"
-if summary_path.exists():
+summary_path = _find_latest_training_summary(_LOGS_DIR)
+summary = None
+if summary_path is not None and summary_path.exists():
     with open(summary_path) as f:
         summary = json.load(f)
     
@@ -59,9 +67,14 @@ print(f"  100% Training complete with stable policy")
 print("\n[ARTIFACTS SAVED]")
 artifacts = [
     ("Model weights", "results/models/ppo_final.zip"),
-    ("Best model", "results/models/best/best_model.zip"),
+    (
+        "Best model",
+        str(Path(summary["best_model_path"]).relative_to(_REPO_ROOT))
+        if summary and summary.get("best_model_path")
+        else "results/models/<run_tag>_best/best_model_<run_tag>.zip",
+    ),
     ("Training logs", "results/logs/tensorboard/"),
-    ("Summary JSON", "results/logs/training_summary.json"),
+    ("Summary JSON", str(summary_path.relative_to(_REPO_ROOT)) if summary_path else "results/logs/<run_tag>/training_summary_<run_tag>.json"),
 ]
 for name, path in artifacts:
     full_path = _REPO_ROOT / path
