@@ -1,29 +1,38 @@
 /* Navigation and interactivity */
 
-async function updateWebsiteVisitCounter() {
+function updateWebsiteVisitCounter() {
     const badgeEl = document.getElementById('website-visit-badge');
     if (!badgeEl) return;
 
     // Avoid counting local file previews or unrelated hosts.
     const host = (window.location && window.location.hostname) ? window.location.hostname.toLowerCase() : '';
-    const path = (window.location && window.location.pathname) ? window.location.pathname.toLowerCase() : '';
+    const pathname = (window.location && window.location.pathname) ? window.location.pathname.toLowerCase() : '';
     const shouldCount =
-        (host === 'sanchit1606.github.io' && path.startsWith('/let-it-compile')) ||
+        (host === 'sanchit1606.github.io' && pathname.startsWith('/let-it-compile')) ||
         host === 'letitcompile.dev' ||
         host === 'www.letitcompile.dev';
 
     if (!shouldCount) {
         badgeEl.removeAttribute('src');
-        badgeEl.setAttribute('alt', 'Website visits counter (disabled on this host)');
+        badgeEl.setAttribute('aria-hidden', 'true');
         return;
     }
 
-    // Use an image-based counter so refresh/reload increments reliably even when
-    // cross-origin fetch() calls are blocked by extensions/network policies.
-    // This increments once per page load.
-    const siteUrl = encodeURIComponent('https://sanchit1606.github.io/Let-It-Compile/');
-    const cacheBust = Date.now();
-    badgeEl.src = `https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=${siteUrl}&t=${cacheBust}`;
+    // IMPORTANT: Most free "hit" APIs do NOT allow browser fetch() due to CORS.
+    // Badges work because <img> loads are not subject to the same CORS read restrictions.
+    // We use shields.io + hits.dwyl.com JSON as the backing counter and cache-bust the hits URL
+    // so refreshes increment reliably.
+    const hitsUrl = `https://hits.dwyl.com/sanchit1606/Let-It-Compile.json?t=${Date.now()}`;
+    const shieldsEndpointUrl = `https://img.shields.io/endpoint?url=${encodeURIComponent(hitsUrl)}&label=&style=flat`;
+
+    badgeEl.onerror = () => {
+        // Fallback: render the default hits.dwyl badge directly (still increments, but includes a label).
+        badgeEl.onerror = null;
+        badgeEl.src = `https://hits.dwyl.com/sanchit1606/Let-It-Compile.svg?t=${Date.now()}`;
+    };
+
+    badgeEl.src = shieldsEndpointUrl;
+    badgeEl.removeAttribute('aria-hidden');
 }
 
 document.addEventListener('DOMContentLoaded', function() {
