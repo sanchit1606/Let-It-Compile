@@ -30,4 +30,11 @@ dist/
 # Logs
 *.log
 
+# Paper (LaTeX)
+# Ignore build outputs generated in Paper/, but keep the source tracked.
+Paper/**
+!Paper/**/
+!Paper/**/*.tex
+!Paper/**/*.bib
+
 # Keep results/ and docs tracked (do not ignore)
