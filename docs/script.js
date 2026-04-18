@@ -1,6 +1,49 @@
 /* Navigation and interactivity */
 
+function renderEmbeddedMarkdown(markdownScriptId, targetContainerId) {
+    const markdownEl = document.getElementById(markdownScriptId);
+    const targetEl = document.getElementById(targetContainerId);
+    if (!markdownEl || !targetEl) {
+        return;
+    }
+
+    const markdownText = (markdownEl.textContent || '').trim();
+    if (!markdownText) {
+        return;
+    }
+
+    if (window.marked && typeof window.marked.parse === 'function') {
+        try {
+            if (typeof window.marked.setOptions === 'function') {
+                window.marked.setOptions({
+                    gfm: true,
+                    breaks: false,
+                    mangle: false,
+                    headerIds: true
+                });
+            }
+
+            targetEl.innerHTML = window.marked.parse(markdownText);
+        } catch (err) {
+            const pre = document.createElement('pre');
+            pre.textContent = markdownText;
+            targetEl.replaceChildren(pre);
+        }
+        return;
+    }
+
+    const warning = document.createElement('div');
+    warning.className = 'warning-box';
+    warning.innerHTML = '<strong>Markdown renderer unavailable:</strong> Unable to load the Markdown renderer. Showing raw text instead.';
+
+    const pre = document.createElement('pre');
+    pre.textContent = markdownText;
+    targetEl.replaceChildren(warning, pre);
+}
+
 document.addEventListener('DOMContentLoaded', function() {
+    renderEmbeddedMarkdown('help-understanding-markdown', 'help-understanding-rendered');
+
     const navLinks = document.querySelectorAll('.nav-link');
     const docSections = document.querySelectorAll('.doc-section');
 
