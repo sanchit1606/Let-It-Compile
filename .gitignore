@@ -37,4 +37,8 @@ Paper/**
 !Paper/**/*.tex
 !Paper/**/*.bib
 
-# Keep results/ and docs tracked (do not ignore)
+# Results, models, and logs (do not track - generated artifacts)
+results/
+*.zip
+*.npz
+*.joblib

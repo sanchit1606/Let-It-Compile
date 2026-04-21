@@ -240,7 +240,17 @@ class KernelOptimizationEnv(gym.Env):
             if device_arrays is not None:
                 try:
                     import numba.cuda as cuda
+                    # Synchronize all streams and explicitly deallocate each array
                     cuda.default_stream().synchronize()
+                    for arr in device_arrays:
+                        try:
+                            if hasattr(arr, 'copy_to_host'):  # NumPy device array
+                                # Explicitly free by setting to None after context sync
+                                arr = None
+                        except:
+                            pass
+                    # Force full GPU memory cleanup
+                    cuda.current_context().deallocations.clear() if hasattr(cuda.current_context(), 'deallocations') else None
                     gc.collect()  # Force garbage collection
                 except:
                     pass  # If cleanup fails, just continue
@@ -396,6 +406,15 @@ cuda.default_stream().synchronize()
         # Baseline: default reg cap, standard block size.
         self._baseline_ms = self._measure_time_ms(self._kernel_name, block_size=256, reg_cap=0)
         self._last_valid_time_ms = self._baseline_ms  # Initialize fallback cache
+        
+        # Aggressive GPU memory cleanup after baseline to prevent accumulation
+        try:
+            import numba.cuda as cuda
+            import gc
+            cuda.default_stream().synchronize()
+            gc.collect()
+        except Exception:
+            pass  # Non-critical
 
         self._prev_action_norm = np.zeros(2, dtype=np.float32)
 

@@ -116,6 +116,8 @@ def run_softmax(N: int, block_size: int = 256, warmup: int = 1, reg_cap: int = 0
     try:
         for _ in range(warmup):
             kernel_fn[grid, block](x, out, np.int32(N), np.int32(N))
+            # Synchronize after each warmup iteration to detect errors early
+            cuda.default_stream().synchronize()
     except Exception as e:
         logger.error(f"Softmax warmup failed with reg_cap={reg_cap}: {e}")
         _clear_jit_cache_on_error()

@@ -109,6 +109,8 @@ def run_reduction(N: int, block_size: int = 256, warmup: int = 1, reg_cap: int =
                 out = cuda.to_device(out_host_zero)
             
             kernel_fn[grid, block](x, out, np.int32(N))
+            # Synchronize after each warmup iteration to detect errors early
+            cuda.default_stream().synchronize()
         cuda.default_stream().synchronize()
     except Exception as e:
         logger.error(f"Reduction warmup failed with reg_cap={reg_cap}: {e}")
