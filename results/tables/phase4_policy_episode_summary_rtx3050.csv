@@ -1,0 +1,2 @@
+episode_id,episode_seed,policy,kernel,matrix_size,max_steps,steps_executed,baseline_ms,sum_reward,mean_reward,best_reward,best_speedup,speedup_from_mean_reward
+0,0,ppo,gemm,64,2,2,0.12185599654912949,-0.4818592431113312,-0.2409296215556656,-0.211920553096132,0.788079446903868,0.7590703784443344

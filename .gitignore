@@ -30,4 +30,15 @@ dist/
 # Logs
 *.log
 
-# Keep results/ and docs tracked (do not ignore)
+# Paper (LaTeX)
+# Ignore build outputs generated in Paper/, but keep the source tracked.
+Paper/**
+!Paper/**/
+!Paper/**/*.tex
+!Paper/**/*.bib
+
+# Results, models, and logs (do not track - generated artifacts)
+results/
+*.zip
+*.npz
+*.joblib

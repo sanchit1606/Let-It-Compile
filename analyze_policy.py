@@ -12,18 +12,48 @@ _REPO_ROOT = Path(__file__).resolve().parent
 _MODELS_DIR = _REPO_ROOT / "results" / "models"
 _LOGS_DIR = _REPO_ROOT / "results" / "logs"
 
+
+def _find_latest_training_summary(logs_dir: Path) -> Path | None:
+    candidates = list(logs_dir.glob("*/training_summary_*.json"))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
 print("=" * 80)
 print("Phase 3: Analyzing Trained PPO Policy")
 print("=" * 80)
 
 # Load the trained model
-model_path = _MODELS_DIR / "ppo_final.zip"
-if not model_path.exists():
-    print(f"[ERROR] Model not found at {model_path}")
+summary_path = _find_latest_training_summary(_LOGS_DIR)
+summary = None
+if summary_path is not None and summary_path.exists():
+    with open(summary_path) as f:
+        summary = json.load(f)
+
+model_path = None
+best_model_path = None
+if summary is not None:
+    model_path = Path(summary.get("model_path", "")) if summary.get("model_path") else None
+    best_model_path = Path(summary.get("best_model_path", "")) if summary.get("best_model_path") else None
+
+chosen_model_path = None
+if best_model_path is not None and best_model_path.exists():
+    chosen_model_path = best_model_path
+elif model_path is not None and model_path.exists():
+    chosen_model_path = model_path
+else:
+    # Fallback: newest .zip in results/models (prefer non-checkpoint files).
+    candidates = [p for p in _MODELS_DIR.glob("*.zip") if not p.name.endswith("_steps.zip")]
+    if candidates:
+        chosen_model_path = max(candidates, key=lambda p: p.stat().st_mtime)
+
+if chosen_model_path is None or not chosen_model_path.exists():
+    print("[ERROR] Could not find a trained model to load.")
+    print(f"  Looked for: {summary_path if summary_path else 'no training summary found'}")
     exit(1)
 
-print(f"\n[LOAD] Loading trained model from: {model_path}")
-model = PPO.load(str(model_path), device="cuda")
+print(f"\n[LOAD] Loading trained model from: {chosen_model_path}")
+model = PPO.load(str(chosen_model_path), device="cuda" if torch.cuda.is_available() else "cpu")
 print(f"[OK] Model loaded successfully")
 
 # Get model info
@@ -35,10 +65,7 @@ print(f"  N epochs: {model.n_epochs}")
 print(f"  Gamma: {model.gamma}")
 
 # Load training summary
-summary_path = _LOGS_DIR / "training_summary.json"
-if summary_path.exists():
-    with open(summary_path) as f:
-        summary = json.load(f)
+if summary is not None:
     print(f"[TRAIN] Configuration:")
     print(f"  Total steps: {summary['total_steps']}")
     print(f"  Max episode length: {summary['max_episode_len']}")
@@ -99,7 +126,8 @@ print(f"  Command: tensorboard --logdir {_LOGS_DIR}/tensorboard --port 6006")
 print(f"  Then open: http://localhost:6006 in your browser")
 
 print(f"\n[ARTIFACTS] Files:")
-print(f"  Model: {model_path}")
-print(f"  Best model: {_MODELS_DIR / 'best' / 'best_model.zip'}")
+print(f"  Model: {chosen_model_path}")
+if best_model_path is not None:
+    print(f"  Best model: {best_model_path}")
 print(f"  Training logs: {_LOGS_DIR / 'tensorboard'}")
-print(f"  Summary: {summary_path}")
+print(f"  Summary: {summary_path if summary_path else 'N/A'}")

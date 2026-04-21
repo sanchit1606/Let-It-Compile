@@ -1,0 +1,3 @@
+episode_id,episode_seed,step,policy,kernel,matrix_size,action_block_idx,action_regcap_idx,block_size,reg_cap,time_ms,baseline_ms,speedup,reward,cupti_ok,cupti_reason,nvml_gpu_util,nvml_mem_util,nvml_mem_used_frac,nvml_temp_norm
+0,0,0,ppo,gemm,64,2,2,256,64,0.1669120043516159,0.12185599654912949,0.7300613099848008,-0.2699386900151992,False,disabled,0.20999999344348907,0.0,0.12622928619384766,0.5699999928474426
+0,0,1,ppo,gemm,64,1,2,128,64,0.15462400019168854,0.12185599654912949,0.788079446903868,-0.211920553096132,False,disabled,0.20999999344348907,0.0,0.12622928619384766,0.5699999928474426

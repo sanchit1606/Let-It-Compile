@@ -9,7 +9,7 @@
 [![CUDA](https://img.shields.io/badge/CUDA-12.x-76B900?logo=nvidia)](https://developer.nvidia.com/cuda-toolkit)
 [![Gymnasium](https://img.shields.io/badge/Gymnasium-RL-orange)](https://gymnasium.farama.org/)
 
-**Research Goal:** Demonstrate that an RL agent conditioned on CUPTI hardware counter signals can adaptively select GPU compilation + launch parameters (register cap / `--maxrregcount`, block size, shared memory allocation), outperforming PTXAS static defaults on NVIDIA RTX 3050 Ti.
+**Research Goal:** Demonstrate that a reinforcement learning (RL) agent, conditioned on CUPTI hardware counter signals, can adaptively select GPU compilation and launch parameters (currently: register cap via `--maxrregcount`/Numba `max_registers` and block size; planned: shared-memory tuning) to outperform PTXAS static defaults across multiple NVIDIA GPU architectures, including RTX 3050 Ti (Ampere), GeForce RTX 4060 (Ada Lovelace), and NVIDIA L40 (Ada Lovelace), with further evaluation planned on data center-class GPUs such as A100 and H100 for real-world, large-scale CUDA workloads.
 
 </div>
 
@@ -17,22 +17,32 @@
 
 ## Overview
 
-This project implements a **7-phase prototype** for automated GPU kernel compilation optimization:
+This project is organized as a **phased prototype** for automated GPU kernel compilation optimization:
 
-1. **Phase 0** - Foundational Experiment (Baseline table: regcap → occupancy → runtime)
-2. **Phase 1** - CUPTI Instrumentation (Hardware counter collection via ncu)
-3. **Phase 2** - Benchmark Kernels (GEMM, reduction, softmax)
-4. **Phase 3** - RL Environment (Gymnasium interface)
-5. **Phase 4** - PPO Agent Training (Stable-Baselines3)
-6. **Phase 5** - BiLSTM Phase Detector (Optional: classify kernel phases)
-7. **Phase 6** - GNN IR Encoder (Optional: kernel structure encoding)
+1. **Phase 0** — Baseline sweep (reg cap → theoretical occupancy → runtime)
+2. **Phase 1** — Hardware counter collection via Nsight Compute (`ncu`)
+3. **Phase 2** — Benchmark kernels + correctness validation (GEMM, reduction, softmax)
+4. **Phase 3** — RL environment + rollouts + PPO training (Gymnasium + Stable-Baselines3)
 
-## 📖 Documentation
+Planned / optional extensions:
+- **Phase 4+** — Phase detection models (BiLSTM) and IR encoders (GNN) for richer state representations
+
+### Current Status (what you can run today)
+
+- **Docs site:** `docs/index.html` (includes the full “Help Understanding Results” guide embedded on-page)
+- **Phase 0:** `experiments/phase0_baseline_table.py` → `results/tables/phase0_baseline.csv`
+- **Phase 1:** `experiments/phase1_collect_counters.py` (Admin recommended on Windows) → `results/tables/phase1_result.csv`
+- **Phase 2:** `pytest tests/test_kernels.py` (plus opt-in slow tests)
+- **Phase 3 rollouts:** `phase3_rollout_log.py` → `results/tables/phase3_rollout.csv`, `results/tables/phase3_episode_summary.csv`
+- **Phase 3 PPO training:** `train_rl.py` → `results/models/*.zip` + TensorBoard logs
+
+## Documentation
 
 Complete documentation is available in the `docs/` folder. Open it in your browser:
 
 - **Quick Launch (Windows):** Double-click `open_docs.bat`
 - **Quick Launch (Any OS):** `python open_docs.py`
+- **Local HTTP server:** `python open_docs.py --server --port 8000`
 - **Manual:** Open `docs/index.html` directly in your browser
 
 The documentation includes:
@@ -56,61 +66,56 @@ The documentation includes:
 
 ```
 gpu-jit-opt/
-├── kernels/          # CUDA kernel definitions (Numba CUDA)
-├── profiling/        # Hardware profiling (CUPTI, NVML, timing)
-├── compiler/         # Compilation control (PTXAS, register allocation)
-├── environment/      # Gymnasium RL environment
-├── models/           # ML models (BiLSTM, GNN, policy networks)
-├── training/         # Training scripts (PPO, phase detector)
-├── experiments/      # Phase runners (0-7)
-├── results/          # Auto-generated outputs (tables, plots, checkpoints)
-├── tests/            # Unit and integration tests
-├── requirements.txt  # Pip dependencies
-├── environment.yml   # Conda environment spec
-└── pyproject.toml    # Project configuration
+├── docs/               # Static documentation site (GitHub Pages compatible)
+├── open_docs.bat        # Windows docs launcher
+├── open_docs.py         # Cross-platform docs launcher (optional local server)
+├── kernels/             # CUDA kernel definitions (Numba CUDA)
+├── profiling/           # Profiling + telemetry (ncu/CUPTI, NVML, timing)
+├── compiler/            # Compilation control (PTXAS helpers, occupancy calc)
+├── environment/         # Gymnasium RL environment (state/action/reward)
+├── training/            # PPO training implementation
+├── experiments/         # Phase runners (Phase 0/1/3)
+├── scripts/             # Convenience entrypoints
+├── results/             # Generated outputs (tables, models, logs)
+├── tests/               # Kernel correctness + environment/profiling tests
+├── requirements.txt     # Pinned pip dependencies (recommended)
+└── pyproject.toml       # Project metadata & tool config
 ```
 
 ## Installation
 
-### Quick Setup
+### Recommended Setup (Conda + pip)
 
-```bash
-# Create conda environment
-conda create -n gpu-jit-opt python=3.10 numba cudatoolkit=12.1 numpy pandas scipy scikit-learn matplotlib seaborn jupyter pytest black isort pynvml nvtx -c conda-forge -c pytorch --yes
+The easiest way to get a known-good set of versions (especially on Windows + Numba) is to use the pinned `requirements.txt`.
 
-# Activate
+```bat
+conda create -n gpu-jit-opt python=3.10 -y
 conda activate gpu-jit-opt
 
-# Install PyTorch with CUDA 12.1
-pip install --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-
-# Install remaining packages
 pip install -r requirements.txt
 ```
 
+Notes:
+- `requirements.txt` includes the correct PyTorch CUDA 12.1 wheel index settings.
+- On Windows, `nvtx` is intentionally skipped by default (see `requirements.txt`).
+
 ### Verify Installation
 
-```bash
+```bat
 python check-for-packages.py
+```
+
+Optional sanity check:
+
+```bat
+python check_cuda.py
 ```
 
 Expected output: All packages installed, CUDA available, RTX 3050 Ti detected.
 
-## Quick Start
-
-### ⚠️ IMPORTANT: Read First
-
-**Do NOT use `--use-cupti` for full PPO training.** It's extremely slow on Windows (70-400 hours for 50k steps).
-
-**Recommended workflow:**
-1. Train with NVML-only: `--use-nvml` (15-30 min)
-2. Analyze with CUPTI separately: `phase3_rollout_log.py --use-cupti` (30-60 min)
-
-See `CUPTI_PERFORMANCE_WARNING.md` and `QUICK_START_CORRECTED.md` for details.
-
 ### Phase 0: Foundational Experiment (Start Here)
 
-```bash
+```bat
 python experiments/phase0_baseline_table.py
 ```
 
@@ -122,9 +127,39 @@ This produces a CSV table showing:
 **Output:** `results/tables/phase0_baseline.csv`  
 **Time:** ~3 seconds
 
-### Phase 3: PPO Training (NVML-only - RECOMMENDED)
+### Phase 1: Hardware Counters (Optional, `ncu`)
 
-```bash
+Collect Nsight Compute counters for real kernels and write a CSV.
+
+Windows note: run from an **Administrator** Command Prompt if counters are blocked.
+
+```bat
+python experiments/phase1_collect_counters.py
+```
+
+**Output:** `results/tables/phase1_result.csv`
+
+Convenience wrapper:
+
+```bat
+python scripts\phase1_show_counters.py
+```
+
+### Phase 2: Kernel Correctness (Recommended before RL)
+
+```bat
+pytest -q tests\test_kernels.py -vv
+```
+
+Opt-in validation on medium/large sizes:
+
+```bat
+pytest -q tests\test_kernels.py -vv --runslow -m slow
+```
+
+### Phase 3: PPO Training (NVML-only — Recommended)
+
+```bat
 python train_rl.py --total-steps 50000 --max-episode-len 50 --use-nvml
 ```
 
@@ -134,11 +169,11 @@ Trains a PPO agent to select optimization parameters (block size, register cap).
 **Output:** Trained model in `results/models/ppo_final.zip`  
 **Monitoring:** `tensorboard --logdir results/logs/tensorboard`
 
-### Phase 3 Analysis: CUPTI Metrics (Optional)
+### Phase 3: Rollout Logging + CUPTI Metrics (Optional)
 
 After training completes, collect detailed hardware metrics:
 
-```bash
+```bat
 python phase3_rollout_log.py --use-cupti --use-nvml --kernels gemm reduction softmax --matrix-sizes 256 512 --episodes-per-case 3 --max-steps 10
 ```
 
@@ -163,14 +198,18 @@ python phase3_rollout_log.py --use-cupti --use-nvml --kernels gemm reduction sof
 - **IR Extractor** — PTX/LLVM IR analysis
 
 ### RL Environment (`environment/`)
-- **State:** 16D vector (CUPTI counters + NVML state + kernel type + prev action)
-- **Action:** Discrete choices for block size, register cap, shared memory
-- **Reward:** Speedup fraction relative to PTXAS default
+- **State (normalized/clamped to [0,1]):**
+	- CUPTI vector (4 metrics) if enabled, else zeros
+	- NVML vector (4 metrics) if enabled, else zeros
+	- Kernel one-hot (3)
+	- Previous action (2)
+	- Total: **13 dims** with CUPTI+NVML, **9 dims** with NVML-only
+- **Action:** `MultiDiscrete([num_block_sizes, num_reg_caps])` → decoded into `(block_size, reg_cap)`
+- **Reward:** Speedup relative to a per-episode baseline (`baseline_ms / time_ms - 1`)
 
 ### Training (`training/`)
-- **Config:** Centralized hyperparameter management
-- **Train RL:** PPO training loop with evaluation callbacks
-- **Train Phase Detector:** BiLSTM classification for kernel phases
+- **Train RL:** PPO training loop (`training/train_rl.py`) with logs + optional evaluation
+- **Wrapper:** `train_rl.py` allows `python train_rl.py ...` from repo root
 
 ## Performance Targets
 
@@ -199,10 +238,11 @@ pytest tests/ --cov=. --cov-report=html
 
 1. **Implement kernel** → `kernels/gemm.py`
 2. **Add profiling** → `profiling/cuda_timer.py`
-3. **Run Phase 0** → Validate occupancy relationship
-4. **Build RL env** → `environment/kernel_env.py`
-5. **Train agent** → `training/train_rl.py`
-6. **Evaluate** → `experiments/phase2_rl_baseline.py`
+3. **Run Phase 2 tests** → `pytest tests/test_kernels.py -vv`
+4. **Run Phase 0** → validate occupancy/runtime trends
+5. **(Optional) Run Phase 1** → collect `ncu` counters (Admin recommended on Windows)
+6. **Run Phase 3 rollouts** → `python phase3_rollout_log.py ...`
+7. **Train agent** → `python train_rl.py ...`
 
 ## Troubleshooting
 
