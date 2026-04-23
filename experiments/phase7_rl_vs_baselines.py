@@ -58,7 +58,7 @@ def run_ptxas_default(
         warmup=warmup,
         repeats=repeats,
         use_cupti=False,
-        use_nvml=False,
+        use_nvml=True,
     )
     env = KernelOptimizationEnv(cfg)
     obs, info = env.reset()
@@ -86,7 +86,7 @@ def run_random_search(
         warmup=warmup,
         repeats=repeats,
         use_cupti=False,
-        use_nvml=False,
+        use_nvml=True,
     )
     env = KernelOptimizationEnv(cfg)
     obs, info = env.reset()
@@ -151,7 +151,7 @@ def run_ppo_agent(
             warmup=warmup,
             repeats=repeats,
             use_cupti=False,
-            use_nvml=False,
+            use_nvml=True,
         )
         env = KernelOptimizationEnv(cfg)
         obs, info = env.reset(seed=ep)
