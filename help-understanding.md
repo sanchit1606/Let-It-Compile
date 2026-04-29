@@ -855,27 +855,32 @@ Each observation is a vector of normalized values $[0, 1]$:
   - `temp_norm`: temperature normalized by 100 (0–1)
 
 **Total observation dimension**:
-- `3` (kernel one-hot) + `2` (previous action) + `4` (CUPTI, if enabled) + `4` (NVML) = **13 dimensions** with CUPTI, or **9 dimensions** without CUPTI.
+- The observation always includes the 4 CUPTI slots in a fixed position.
+  - If CUPTI is disabled or unavailable, those 4 values are just zeros (but the slots are still present so the vector shape stays stable).
+- With NVML enabled (the default), the total is: `4` (CUPTI) + `4` (NVML) + `3` (kernel one-hot) + `2` (previous action) = **13 dimensions**.
+- If NVML is disabled, the total is: `4` (CUPTI) + `3` (kernel one-hot) + `2` (previous action) = **9 dimensions**.
+
+**Implementation note (ordering):** the environment concatenates features as `CUPTI (4) → NVML (4) → kernel one-hot (3) → previous action (2)`.
 
 #### Action and action decoding
 
-The discrete action space is:
+The action space is a **2D MultiDiscrete**:
 
 $$
-	ext{action\_space} = \text{Discrete}(\text{num\_block\_sizes} \times \text{num\_reg\_caps})
+  ext{action\_space} = \text{MultiDiscrete}([\text{num\_block\_sizes}, \text{num\_reg\_caps}])
 $$
 
 In the current implementation:
 - Block sizes: `[64, 128, 256]` (3 options)
 - Register caps: `[0, 32, 64]` (3 options: `0` means default)
-- Total outcomes: $3 \times 3 = 9$ possible actions, indexed 0–8
+- Total combinations: $3 \times 3 = 9$
 
-The environment **decodes** a given action integer into `(block_size, reg_cap)` by treating it as a multi-discrete index.
+An action is a **pair of indices**: `action = [block_idx, reg_idx]`.
 
 Example decoding:
-- Action 0 → `(block_size=64, reg_cap=0)`
-- Action 4 → `(block_size=128, reg_cap=32)`
-- Action 8 → `(block_size=256, reg_cap=64)`
+- `action=[0, 0]` → `(block_size=64, reg_cap=0)`
+- `action=[1, 1]` → `(block_size=128, reg_cap=32)`
+- `action=[2, 2]` → `(block_size=256, reg_cap=64)`
 
 #### Reward
 
@@ -918,11 +923,11 @@ cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stac
 ```
 
 **Characteristics:**
-- **Speed**: ~5–20 minutes for 50k steps (depends on hardware).
+- **Speed**: often much faster than CUPTI mode (depends heavily on hardware and kernel choice).
 - **Privileges**: Does NOT require Administrator terminal.
-- **Observation**: Only NVML telemetry (lightweight) + kernel identity + previous action.
-  - CUPTI metric columns are all zero.
-  - Observation dimension: 9 (instead of 13).
+- **Observation**: NVML telemetry + kernel identity + previous action.
+  - The 4 CUPTI slots are still present but will be zeros because CUPTI collection is disabled.
+  - Observation dimension stays **13** (with NVML enabled).
 - **What the agent learns**: Patterns from light telemetry (GPU util, memory util, temperature).
   - This is less informative than CUPTI, but fast and sufficient for basic optimization.
   - Example: "Reduction gets hot → try lower block size."
@@ -1022,7 +1027,7 @@ Eval: mean_reward = 0.1234, mean_ep_length = 45.0
 Step: 5000 / 50000
 ...
 Training complete. Saving final model...
-Training summary saved to results/logs/training_summary.json
+Training summary saved to results/logs/<run_tag>/training_summary_<gpu_tag>.json
 ====================================
 ```
 
@@ -1038,21 +1043,22 @@ Watch for:
 After training completes:
 
 **Model files**:
-- `results/models/ppo_final.zip` — trained policy weights (loadable with `PPO.load()`)
-- `results/models/best/best_model.zip` (if `--eval-freq` set) — best checkpoint during evaluation
-- `results/models/ppo_checkpoint_*.zip` — periodic snapshots (one every ~10% of training)
+- `results/models/<run_tag>.zip` — final trained policy (loadable with `PPO.load()`)
+- `results/models/<run_tag>_*_steps.zip` — periodic checkpoints (~10 over training)
+- `results/models/<run_tag>_best/best_model.zip` (if evaluation is enabled) — best model found during evaluation
+  - On some runs this may be renamed to `best_model_<gpu_tag>.zip`.
 
 **Logs and summaries**:
-- `results/logs/train_rl.log` — detailed training log (timestamps, step counts, warnings)
-- `results/logs/training_summary.json` — a JSON summary with all hyperparameters and artifact paths:
+- `results/logs/<run_tag>/train_rl_<gpu_tag>.log` — detailed training log (timestamps, warnings)
+- `results/logs/<run_tag>/training_summary_<gpu_tag>.json` — JSON summary with hyperparameters + artifact paths:
   ```json
   {
     "total_steps": 50000,
     "learning_rate": 0.0003,
     "batch_size": 2048,
-    "model_path": "results/models/ppo_final.zip",
-    "best_model_path": "results/models/best/best_model.zip",
-    "log_path": "results/logs"
+    "model_path": "results/models/<run_tag>.zip",
+    "best_model_path": "results/models/<run_tag>_best/best_model_<gpu_tag>.zip",
+    "log_dir": "results/logs/<run_tag>"
   }
   ```
 
@@ -1169,7 +1175,7 @@ These are the tunable knobs when running `python train_rl.py`. You only need to 
 
 For this project, a recommended workflow:
 1. Run NVML-only (50k steps, ~15 min) to validate training works.
-2. Check the learned policy quality in `results/models/ppo_final.zip`.
+2. Check the learned policy quality using the model path recorded in your training summary (typically `results/models/<run_tag>.zip`).
 3. If satisfied, you're done. If you want better results, run CUPTI+NVML (50k steps, ~4 hours) for publication.
 
 ---
@@ -1201,10 +1207,12 @@ Then open `http://localhost:6006` in your browser. You'll see training curves or
 - Climbs over time: agent learns better configurations
 - Plateaus: agent has converged to a stable policy
 
-**Your result:** Should reach ~3+ for a good training run
-- 0.0 = random agent (no speedup over baseline)
-- 1.0 = configs that are 2x faster than baseline
-- 3.15 = configs that are ~4x faster than baseline (your result!)
+**How to interpret values (important):** this project uses `reward = speedup - 1`, so:
+- `reward = 0.0` → `speedup = 1.0x` (same as baseline)
+- `reward = 0.2` → `speedup = 1.2x` (20% faster)
+- `reward = -0.1` → `speedup = 0.9x` (10% slower)
+
+There is no single “correct” target value: it depends on kernel choice, matrix sizes, measurement noise, and how much headroom exists vs the baseline configuration.
 
 **Good sign:** Smooth upward curve that eventually plateaus
 **Bad sign:** Flat line (no learning) or wild oscillations (unstable training)
@@ -1224,9 +1232,7 @@ Then open `http://localhost:6006` in your browser. You'll see training curves or
 - Decreases over time as the policy stabilizes
 - High variance is normal (depends on batch content)
 
-**Your result:** Should end near -0.01 to 0.01
-- Negative values are expected in PPO (log-probability gradients)
-- Magnitude matters: smaller = better
+**How to read it:** the sign/magnitude varies by run; focus on stability (no runaway explosions) rather than a specific numeric endpoint.
 
 ---
 
@@ -1244,9 +1250,7 @@ Then open `http://localhost:6006` in your browser. You'll see training curves or
 - Drops sharply: learning to estimate correctly
 - Plateaus: predictions are stable
 
-**Your result:** Should end < 1.0 (ideally < 0.5)
-- Your training achieved ~0.574
-- This means the value network learned good estimates
+**How to read it:** a general downward trend is a good sign, but the absolute scale depends on reward magnitude and episode structure.
 
 **Good sign:** Consistent downward trend
 **Bad sign:** Stays stuck at high values (value network not learning)
@@ -1262,13 +1266,7 @@ Then open `http://localhost:6006` in your browser. You'll see training curves or
 **Direction:**
 - Should be small and stable
 
-**Normal range:** 0.01-0.05 per update
-- Smaller KL = policy change is conservative
-- This is by design: PPO clips large policy changes
-
-**Your result:** Should end around 0.01-0.02
-- Your training achieved ~0.0133
-- This is excellent (very stable policy)
+**Common behavior:** often small and fairly stable when learning is well-behaved (exact values depend on `learning_rate` and `clip_range`).
 
 **Good sign:** Consistent, small values
 **Bad sign:** Large values (> 0.1) = policy changing too much
@@ -1283,13 +1281,7 @@ Then open `http://localhost:6006` in your browser. You'll see training curves or
 
 **Formula:** `clipped_updates / total_updates`
 
-**Normal range:** 0.1-0.3 (10-30%)
-- Means PPO is actively preventing crash-like policy changes
-- This is good! Shows the safety mechanism works
-
-**Your result:** Should be 0.1-0.3
-- Your training achieved ~0.147 (14.7%)
-- This is perfect (reasonable safety without over-clipping)
+**How to read it:** non-zero values are expected; extremely high clip fractions can indicate updates are too aggressive (often fixed by lowering `learning_rate`).
 
 **Good sign:** Stable in the 0.1-0.3 range
 **Bad sign:** Close to 0 (maybe learning rate too low) or > 0.5 (maybe too high)
@@ -1307,10 +1299,7 @@ Then open `http://localhost:6006` in your browser. You'll see training curves or
 - Stabilizes to a steady rate
 - Should be relatively flat over time
 
-**Your result:** ~85 FPS for NVML-only mode
-- This means 85 kernel executions per second
-- 50,000 steps ÷ 85 FPS ≈ 588 seconds ≈ 9.8 minutes
-- No GPU memory leaks (would cause FPS to drop)
+**How to read it:** use FPS as a sanity check for performance regressions (e.g., steadily decreasing FPS can indicate overhead or resource buildup).
 
 **Good sign:** Stable or increasing FPS
 **Bad sign:** Decreasing FPS (indicates memory buildup)
@@ -1323,10 +1312,7 @@ Then open `http://localhost:6006` in your browser. You'll see training curves or
 - Cumulative environment steps taken so far
 - Should increase linearly with training progress
 
-**Your result:** Should reach your `--total-steps` target
-- Target: 50,000
-- Actual: 50,176
-- Perfect! ✓
+**How to read it:** should grow steadily and end near your `--total-steps` target (it can overshoot slightly depending on SB3 rollout sizing).
 
 ---
 
@@ -1341,9 +1327,7 @@ Then open `http://localhost:6006` in your browser. You'll see training curves or
 - Should be relatively stable over time
 - Not growing more negative (that means getting too greedy)
 
-**Your result:** Should be stable around -1.0 to -2.0
-- Your training showed ~-1.53
-- This is good (agent explores enough)
+**How to read it:** should remain reasonably stable; a sharp collapse can indicate the policy has become overly deterministic too early.
 
 ---
 
@@ -1579,7 +1563,9 @@ Your trained agent is ready to be loaded and used:
 ```python
 from stable_baselines3 import PPO
 
-model = PPO.load("results/models/ppo_final.zip")
+# Use the exact model path recorded in your training summary.
+# Typical example: results/models/<run_tag>.zip
+model = PPO.load("results/models/<run_tag>.zip")
 obs, info = env.reset()
 while True:
     action, _states = model.predict(obs, deterministic=True)
@@ -1602,7 +1588,7 @@ while True:
    - Verify FPS is reasonable
 
 3. **Save training summaries**
-   - Each run's `training_summary.json` notes hyperparameters
+  - Each run's `training_summary_<gpu_tag>.json` notes hyperparameters
    - Useful for comparing later
 
 4. **Export for papers**
