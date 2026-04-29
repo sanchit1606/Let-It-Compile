@@ -1,6 +1,6 @@
 # Help Understanding Experiment Results
 
-This doc explains how to interpret the experimental output in this project.
+This document explains how to interpret the experimental output in this project.
 
 As of now, **Phase 0** through **Phase 5** are implemented and produce results, **Phase 2** validation (kernel correctness tests) is implemented, and **Phase 7** (RL vs Baselines Comparison) provides the final evaluation table.
 
@@ -38,7 +38,7 @@ It saves all results into a CSV for later analysis.
 
 ## Beginner concepts (sweep, registers, occupancy)
 
-This project uses CUDA-style GPU execution concepts. If you’re new to operating systems or parallel computing, this section explains the *three most important ideas* used throughout Phase 0:
+This project proposes and uses CUDA-style GPU execution concepts. If you’re new to operating systems or parallel computing, this section explains the *three most important ideas* used throughout Phase 0:
 
 ### 1) What does “sweep” mean?
 
@@ -1867,3 +1867,14 @@ PPO's advantage grows with:
 - Deployment scenarios (consistent results without re-searching)
 
 ---
+
+## What’s Next (Immediate Proposed Aims)
+
+As of April 2026, the core RL vs Baselines infrastructure (Phases 0–7) is completely functional. The next phase of development focuses on the following six targeted extensions to elevate the framework's scientific claims and evaluation credibility:
+
+1. **CPU-to-GPU Inlining Measurement:** Directly measuring how Python/Numba JIT inlining structures alter PTX register pressure and final SM occupancy.
+2. **Roofline State Observation:** Adding the Roofline relative position (Arithmetic Intensity / Ridge Point) as a 14th dimension to the RL state to instantly signal compute vs. memory bounds.
+3. **Transformer Workloads:** Adding `LayerNorm` and `Batched GEMM` to the kernel suite to prove the framework handles modern LLM primitives.
+4. **GNN State Integration:** Feeding the 69-dim output of the Phase 6 PyTorch Geometric encoder directly into the RL agent's observation space.
+5. **Energy-Aware Rewards:** Changing the reward function to incorporate NVML power draw, creating a performance-per-watt optimization mode.
+6. **Size Adaptation Sweeps:** Running experiments from N=128 to N=4096 to mathematically prove the RL agent changes its `--maxrregcount` strategy as the problem size scales.

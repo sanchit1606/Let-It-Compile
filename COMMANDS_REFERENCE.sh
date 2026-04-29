@@ -89,11 +89,13 @@ results/tables/phase3_rollout.csv
 results/tables/phase3_episode_summary.csv
 
 # Trained models
-results/models/ppo_final.zip
-results/models/best/best_model.zip (if eval enabled)
+results/models/<run_tag>.zip
+results/models/<run_tag>_*_steps.zip
+results/models/<run_tag>_best/best_model.zip (if eval enabled)
 
 # Training logs
-results/logs/train_rl.log
+results/logs/<run_tag>/train_rl_<gpu_tag>.log
+results/logs/<run_tag>/training_summary_<gpu_tag>.json
 results/logs/tensorboard/
 
 

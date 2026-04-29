@@ -166,7 +166,7 @@ python train_rl.py --total-steps 50000 --max-episode-len 50 --use-nvml
 Trains a PPO agent to select optimization parameters (block size, register cap).
 
 **Time:** ~15-30 minutes  
-**Output:** Trained model in `results/models/ppo_final.zip`  
+**Output:** Trained model in `results/models/<run_tag>.zip` (exact path is recorded in the training summary JSON)  
 **Monitoring:** `tensorboard --logdir results/logs/tensorboard`
 
 ### Phase 3: Rollout Logging + CUPTI Metrics (Optional)
@@ -203,7 +203,7 @@ python phase3_rollout_log.py --use-cupti --use-nvml --kernels gemm reduction sof
 	- NVML vector (4 metrics) if enabled, else zeros
 	- Kernel one-hot (3)
 	- Previous action (2)
-	- Total: **13 dims** with CUPTI+NVML, **9 dims** with NVML-only
+	- Total: **13 dims** with NVML enabled (default); **9 dims** if NVML is disabled
 - **Action:** `MultiDiscrete([num_block_sizes, num_reg_caps])` → decoded into `(block_size, reg_cap)`
 - **Reward:** Speedup relative to a per-episode baseline (`baseline_ms / time_ms - 1`)
 
