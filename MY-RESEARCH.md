@@ -134,12 +134,23 @@ We formulate kernel optimization as a **Markov Decision Process (MDP)** within a
 | 3 | Kernel ID | One-hot encoding: [gemm, reduction, softmax] |
 | 2 | Previous action | Normalized (block_size_idx, reg_cap_idx) |
 
-**Action space** (MultiDiscrete [3, 3] = 9 configurations):
+**Action space (MultiDiscrete [3, 3] = 9 configurations, expansion planned):**
 
-| Knob | Options | Values |
+| Knob | Current Options | Values |
 |---|---|---|
 | Block size | 3 | 64, 128, 256 threads/block |
 | Register cap | 3 | 0 (PTXAS default), 32, 64 max regs/thread |
+
+**Planned action space expansion (MultiDiscrete [8, 11, 5, 4] = 1,760 configurations):**
+
+| Knob | Options | Values |
+|---|---|---|
+| Block size | 8 | 32, 64, 96, 128, 192, 256, 384, 512 threads/block |
+| Register cap | 11 | 0, 16, 24, 32, 40, 48, 56, 64, 80, 96, 128 |
+| Shared memory config | 5 | Default, 16KB, 32KB, 48KB, 64KB prefer shared |
+| L1/shared partition | 4 | PreferNone, PreferShared, PreferL1, PreferEqual |
+
+> **Critical note:** The current 9-configuration space is trivially searchable by exhaustive methods (~2 seconds). Expanding to 1,760+ configurations is the highest priority for justifying RL over brute force and is required for Q1 publication.
 
 **Reward function:**
 
@@ -290,7 +301,11 @@ PTX source → basic blocks (nodes) + control flow (edges)
 
 3. **Kernel-dependent optimization potential.** Compute-bound kernels (GEMM) are well-served by defaults; memory-bound kernels (reduction, softmax) benefit most from adaptive tuning.
 
-4. **RL advantage scales with action space.** With only 9 configurations (3×3), random search explores exhaustively. Expanding knobs (shared memory, unrolling, L1 partitioning) will amplify the RL advantage.
+4. **GEMM performance analysis.** The PPO agent’s mean GEMM time (0.837ms) is higher than baseline (0.201ms), indicating the learned policy converges to a suboptimal region for compute-bound kernels. This is a known limitation: with only 9 configurations, the agent lacks the granularity to find marginal improvements on already-optimized kernels. The 1.003× best speedup represents the agent’s single best discovery, not its steady-state policy.
+
+5. **RL advantage scales with action space.** With only 9 configurations (3×3), random search explores exhaustively. Expanding knobs (shared memory, L1 partitioning, finer register granularity) to ~1,760 configurations will amplify the RL advantage and is the highest-priority next step.
+
+6. **Comparison baselines needed.** Bayesian Optimization (BO) via Optuna or scikit-optimize is the standard autotuning baseline for Q1 venues. Current comparison against random search alone is insufficient.
 
 ### 8.4 Phase Detector Results
 
@@ -388,14 +403,37 @@ python experiments/phase7_rl_vs_baselines.py --model results/models/*.zip  # Com
 
 ### Future Directions (Immediate Proposed Aims)
 
-Based on recent architectural progress, we propose the following prioritized roadmap for the immediate future:
+Based on recent architectural progress and critical analysis, we propose the following prioritized roadmap:
 
-1. **CPU-to-GPU Inlining Measurement:** Design experiments demonstrating that CPU-side Numba JIT decisions (e.g., function inlining structures) cascade into measurable changes in PTX register allocation and SM occupancy. This substantiates the core scientific claim of cross-layer interactions.
-2. **Roofline Position as RL Observation:** Integrate the Arithmetic Intensity/Roofline Ridge Point ratio as a 14th scalar dimension in the RL state space. This provides the agent with immediate context regarding whether a kernel is currently compute-bound or memory-bound, accelerating policy convergence.
-3. **Transformer Workload Kernels:** Introduce `LayerNorm` and `Batched GEMM` to the kernel suite to explicitly evaluate the framework against modern, high-relevance workloads prevalent in Large Language Models.
-4. **GNN-Augmented RL State:** Connect the already-implemented 69-dim PyTorch Geometric kernel structure embedding (Phase 6) into the PPO training loop. This expands the observation space to 83 dimensions, granting the agent full visibility into PTX code structure alongside PMU counters.
-5. **Energy-Aware Reward Function:** Leverage the existing NVML power draw telemetry to construct a novel reward formulation optimizing for *performance-per-watt*, differentiating the framework as an energy-aware green-AI compiler.
-6. **Size Adaptation Experiments:** Conduct sweeps across a broad spectrum of matrix sizes (e.g., $N=128$ to $N=4096$) to explicitly prove that the RL agent adaptively changes `--maxrregcount` as the compute-occupancy tradeoff shifts, a capability impossible for static compilers.
+**Priority 1 — Action Space Expansion (Critical for Publication):**
+Expand from 9 to ~1,760 configurations by adding shared memory config (5 levels), L1/shared partition (4 levels), and finer-grained block sizes (8 levels) and register caps (11 levels). This is the single most important change for Q1 publishability.
+
+**Priority 2 — Bayesian Optimization Baseline:**
+Implement a Gaussian Process-based BO baseline using Optuna or scikit-optimize with the same evaluation budget. If PPO beats BO on cross-kernel generalization (same policy works across multiple kernels without re-tuning), that is a genuine contribution.
+
+**Priority 3 — Register Spill Cliff Discovery:**
+Measure the performance cliff when `--maxrregcount` crosses the kernel’s actual register requirement. Run kernels across fine-grained register caps (16, 20, 24, ..., 128), plot performance vs. register cap, and show that the RL agent’s learned policy sits just above the cliff. No published system discovers or exploits this adaptively.
+
+**Priority 4 — CPU-to-GPU Inlining Measurement:**
+Design experiments demonstrating that CPU-side Numba JIT decisions (e.g., function inlining structures) cascade into measurable changes in PTX register allocation and SM occupancy.
+
+**Priority 5 — Statistical Rigor:**
+Report p-values (Wilcoxon signed-rank test), 95% confidence intervals, coefficient of variation, and thermal throttling controls for all speedup claims.
+
+**Priority 6 — Occupancy Fallacy Validation:**
+If the RL agent discovers that a lower-occupancy configuration outperforms a higher one (e.g., `--maxrregcount=64` beats `--maxrregcount=32`), document this as validation of Volkov’s "Better Performance at Lower Occupancy" finding.
+
+**Priority 7 — Energy-Aware Reward Function:**
+Leverage existing NVML power draw telemetry to construct a reward formulation optimizing for performance-per-watt.
+
+**Priority 8 — Break-Even Analysis:**
+Quantify the deployment threshold: profiling adds ~30s overhead, best speedup saves ~1ms/invocation → ~30,500 invocations to break even. Frame deployment regimes where adaptive compilation is cost-effective.
+
+**Priority 9 — CUDA 13.0 Shared Memory Spilling:**
+Integrate NVIDIA’s new `asm(".pragma \"enable_smem_spilling\"")` feature, adding a third spilling target (shared memory vs. local memory vs. more registers) to the optimization space.
+
+**Priority 10 — Transformer Workload Kernels:**
+Introduce `LayerNorm` and `Batched GEMM` to prove the framework handles modern LLM primitives.
 
 ---
 

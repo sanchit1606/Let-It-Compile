@@ -1,4 +1,4 @@
-# Help Understanding Experiment Results
+﻿# Help Understanding Experiment Results
 
 This document explains how to interpret the experimental output in this project.
 
@@ -11,7 +11,7 @@ Project objectives (what the experiments are trying to prove):
 - Connect those performance changes to **measurable GPU signals** (occupancy- and utilization-like counters from `ncu`).
 - Produce clean CSV artifacts that can be reused later for RL (Phase 3+) and for writing up results.
 
-This document’s objectives (what you should be able to do after reading):
+This documentâ€™s objectives (what you should be able to do after reading):
 - Understand what each phase measures and why it exists.
 - Run Phase 0/1 and know where their CSV outputs are saved.
 - Run Phase 2 tests (small suite vs performance-scale suite) and interpret the results.
@@ -19,7 +19,7 @@ This document’s objectives (what you should be able to do after reading):
 
 ---
 
-## Phase 0 — Foundational Baseline Table
+## Phase 0 â€” Foundational Baseline Table
 
 ### Goal (what Phase 0 is trying to measure)
 Phase 0 runs a sweep over:
@@ -38,9 +38,9 @@ It saves all results into a CSV for later analysis.
 
 ## Beginner concepts (sweep, registers, occupancy)
 
-This project proposes and uses CUDA-style GPU execution concepts. If you’re new to operating systems or parallel computing, this section explains the *three most important ideas* used throughout Phase 0:
+This project proposes and uses CUDA-style GPU execution concepts. If youâ€™re new to operating systems or parallel computing, this section explains the *three most important ideas* used throughout Phase 0:
 
-### 1) What does “sweep” mean?
+### 1) What does â€œsweepâ€ mean?
 
 A **sweep** means: *systematically testing many combinations of settings*.
 
@@ -54,12 +54,12 @@ Think of it like a spreadsheet grid:
 Each unique combination becomes **one row in the CSV**.
 
 Why a sweep is useful:
-- It reveals trends (e.g., “block size 128 is usually best for softmax at large sizes”).
+- It reveals trends (e.g., â€œblock size 128 is usually best for softmax at large sizesâ€).
 - It helps you find interactions (e.g., a register cap that helps GEMM may not help reduction).
 
-### 2) What is a “register cap” in Phase 0?
+### 2) What is a â€œregister capâ€ in Phase 0?
 
-GPUs have multiple “memory/storage” layers:
+GPUs have multiple â€œmemory/storageâ€ layers:
 - **Registers**: fastest per-thread storage (inside the GPU core).
 - **Shared memory**: fast memory shared by threads in the same block.
 - **Global memory**: large but much slower (GPU VRAM).
@@ -67,31 +67,31 @@ GPUs have multiple “memory/storage” layers:
 A kernel uses registers to hold temporary values (loop counters, partial sums, pointers, etc.). The **register cap** is a limit you ask the compiler to respect:
 
 - `reg_cap = default` means **no limit requested** (compiler chooses).
-- `reg_cap = 32` means “try to compile the kernel so each thread uses **at most 32 registers**”.
-- `reg_cap = 64` means “at most 64 registers per thread”.
+- `reg_cap = 32` means â€œtry to compile the kernel so each thread uses **at most 32 registers**â€.
+- `reg_cap = 64` means â€œat most 64 registers per threadâ€.
 
-In CUDA toolchains this is commonly called `--maxrregcount` (PTXAS flag). In this repo’s Phase 0 implementation, it’s applied through Numba as `max_registers=...`.
+In CUDA toolchains this is commonly called `--maxrregcount` (PTXAS flag). In this repoâ€™s Phase 0 implementation, itâ€™s applied through Numba as `max_registers=...`.
 
 Why it can change performance:
 - If you cap registers too low, the compiler may need to **spill** values into local memory (which lives in global memory). That usually makes the kernel slower.
 - If you allow many registers, the kernel may avoid spilling and run faster.
-- But using more registers per thread means fewer threads can be “resident” on an SM at the same time → potentially lower occupancy.
+- But using more registers per thread means fewer threads can be â€œresidentâ€ on an SM at the same time â†’ potentially lower occupancy.
 
 So register cap is a classic tradeoff:
-- **low regs** → higher occupancy, but risk spilling
-- **high regs** → less spilling, but potentially lower occupancy
+- **low regs** â†’ higher occupancy, but risk spilling
+- **high regs** â†’ less spilling, but potentially lower occupancy
 
-### 3) What is “occupancy”?
+### 3) What is â€œoccupancyâ€?
 
 #### The simple meaning
 **Occupancy** is how many GPU warps are *active at the same time* on each SM, compared to the maximum possible.
 
-Definitions you’ll see in GPU programming:
+Definitions youâ€™ll see in GPU programming:
 - **Thread**: smallest unit of execution.
 - **Warp**: group of 32 threads that execute in lockstep (SIMT model).
 - **Block**: a group of threads that can cooperate (shared memory + synchronization).
 - **Grid**: all blocks launched for a kernel call.
-- **SM (Streaming Multiprocessor)**: the GPU “core cluster” that runs blocks/warps.
+- **SM (Streaming Multiprocessor)**: the GPU â€œcore clusterâ€ that runs blocks/warps.
 
 On your RTX 3050 Ti (sm_86), an SM can support up to a fixed maximum number of active warps (the model in this repo uses 48 as the max warps/SM).
 
@@ -107,18 +107,18 @@ So:
 
 #### Why occupancy changes
 Occupancy is limited by GPU resources such as:
-- **registers per thread** (more registers/thread → fewer warps fit)
+- **registers per thread** (more registers/thread â†’ fewer warps fit)
 - **threads per block** (bigger blocks can reduce how many blocks fit)
 - **shared memory per block** (not a limiter in our Phase 0 kernels, but common in other kernels)
 
 #### Important: occupancy is not the same as speed
-Higher occupancy often helps **memory-bound** kernels (because more warps lets the SM “hide” memory latency).
+Higher occupancy often helps **memory-bound** kernels (because more warps lets the SM â€œhideâ€ memory latency).
 
 But for **compute-heavy** kernels, the fastest configuration may use:
 - more registers (less spilling, better instruction scheduling)
 - and therefore a bit lower occupancy
 
-That’s exactly why Phase 0 measures both occupancy and runtime.
+Thatâ€™s exactly why Phase 0 measures both occupancy and runtime.
 
 ---
 
@@ -159,7 +159,7 @@ Saved 81 results to results\tables\phase0_baseline.csv
 
 Phase 0 Summary Table
 Register Cap vs Occupancy vs Runtime
-┌ ... lots of rows ... ┐
+â”Œ ... lots of rows ... â”
 
 Key Insights:
   GEMM: Best time = ...
@@ -186,7 +186,7 @@ If you see `Saved 0 results` or many `access violation` errors, that indicates a
 - CSV output path:
   - `results/tables/phase0_baseline.csv`
 
-This CSV is the “real artifact” of Phase 0; the terminal table is just a pretty view.
+This CSV is the â€œreal artifactâ€ of Phase 0; the terminal table is just a pretty view.
 
 ---
 
@@ -196,7 +196,7 @@ This is a **reference for the CSV file** `results/tables/phase0_baseline.csv`.
 
 Important detail:
 - The terminal table prints occupancy as a percent (e.g. `67%`), but the CSV stores occupancy as a **fraction** (e.g. `0.6667`).
-   - Convert fraction → percent by doing: `theor_occ * 100`.
+   - Convert fraction â†’ percent by doing: `theor_occ * 100`.
 
 Per-row identifiers
 - `kernel` (string): Which benchmark ran: `gemm`, `reduction`, or `softmax`.
@@ -211,8 +211,8 @@ Per-row identifiers
    - This is what occupancy calculations use.
 - `reg_cap` (string): Register cap setting.
    - Values are typically `default`, `32`, `64`.
-   - Note: it’s stored as text so the CSV can mix `default` and numeric caps.
-   - Meaning: this is the “register cap setting” explained above (the limit requested during compilation).
+   - Note: itâ€™s stored as text so the CSV can mix `default` and numeric caps.
+   - Meaning: this is the â€œregister cap settingâ€ explained above (the limit requested during compilation).
 
 Register + occupancy fields
 - `est_regs` (int): A heuristic estimate of registers per thread (kept mainly for comparison).
@@ -221,7 +221,7 @@ Register + occupancy fields
    - hardware limits (sm_86),
    - `actual_regs`,
    - `threads_per_block`.
-   - Meaning: this is “occupancy” as defined above (how many warps can be resident compared to the max), but computed analytically rather than measured with a profiler.
+   - Meaning: this is â€œoccupancyâ€ as defined above (how many warps can be resident compared to the max), but computed analytically rather than measured with a profiler.
 
 Timing fields (milliseconds)
 - `time_ms_mean` (float): Mean kernel time over the measured repeats.
@@ -232,7 +232,7 @@ Timing fields (milliseconds)
 Optional profiler field (only if enabled)
 - `achieved_occ` (float): Achieved occupancy proxy **fraction** in $[0,1]$ collected via Nsight Compute (`ncu`) metric:
    - `sm__warps_active.avg.pct_of_peak_sustained_active`
-   - This is the closest thing to “measured occupancy” in Phase 0.
+   - This is the closest thing to â€œmeasured occupancyâ€ in Phase 0.
    - On Windows, this frequently requires Administrator permissions for GPU counters.
 
 ---
@@ -249,25 +249,25 @@ Which CUDA kernel benchmark was run:
 
 #### `Size`
 The problem size label used for that kernel:
-- For `gemm`: size `N` means multiplying two `N × N` matrices.
-- For `softmax`: size `N` means applying softmax to an `N × N` matrix, row-by-row.
-- For `reduction`: Phase 0 currently reduces **`N × N` elements** (it uses `matrix_size * matrix_size`).
-  - Example: `Size=256` means it reduces `256² = 65,536` floats.
+- For `gemm`: size `N` means multiplying two `N Ã— N` matrices.
+- For `softmax`: size `N` means applying softmax to an `N Ã— N` matrix, row-by-row.
+- For `reduction`: Phase 0 currently reduces **`N Ã— N` elements** (it uses `matrix_size * matrix_size`).
+  - Example: `Size=256` means it reduces `256Â² = 65,536` floats.
 
 #### `Block`
 Threads per block.
 - For `reduction` and `softmax`, this is the actual 1D block size (e.g., 256 threads).
-- For `gemm`, the kernel is tiled and launches a **2D** block (`(tile, tile)`), so the `Block` shown in the table is treated more like a “configuration label” than the literal launched thread count.
+- For `gemm`, the kernel is tiled and launches a **2D** block (`(tile, tile)`), so the `Block` shown in the table is treated more like a â€œconfiguration labelâ€ than the literal launched thread count.
 
 #### `RegCap`
 Register cap setting used in the sweep.
-- `default` means “no cap requested”.
+- `default` means â€œno cap requestedâ€.
 - `32` or `64` are cap values.
 
 What it actually does now:
 - Phase 0 compiles separate Numba kernel variants using `max_registers=RegCap` (PTXAS `--maxrregcount` equivalent).
 - That means changing `RegCap` can change:
-   - the compiler’s chosen registers/thread (`actual_regs`)
+   - the compilerâ€™s chosen registers/thread (`actual_regs`)
    - theoretical occupancy
    - runtime (due to spilling vs keeping values in registers)
 
@@ -276,7 +276,7 @@ The register count used for the occupancy calculation.
 
 Related columns in the CSV:
 - `est_regs`: heuristic estimate (kept mainly for comparison)
-- `actual_regs`: **measured from the compiled kernel** (`regs_per_thread` from Numba’s compiled metadata)
+- `actual_regs`: **measured from the compiled kernel** (`regs_per_thread` from Numbaâ€™s compiled metadata)
 
 So: in the Phase 0 table, `Regs` corresponds to `actual_regs`.
 
@@ -284,10 +284,10 @@ So: in the Phase 0 table, `Regs` corresponds to `actual_regs`.
 The **theoretical occupancy estimate** as a percent.
 
 Occupancy (informal beginner definition):
-- “How many warps can the GPU keep active at once on each SM?”
+- â€œHow many warps can the GPU keep active at once on each SM?â€
 
 Why occupancy changes:
-- More registers per thread → fewer warps fit → lower occupancy.
+- More registers per thread â†’ fewer warps fit â†’ lower occupancy.
 - Block size also affects how many blocks/warps can fit.
 
 Important:
@@ -332,7 +332,7 @@ Standard deviation across repeats.
 ### Why do some rows have huge times or huge Std?
 A few common reasons:
 1. **CPU-side timing jitter** on Windows
-   - Some systems can’t reliably use CUDA event timing with Numba.
+   - Some systems canâ€™t reliably use CUDA event timing with Numba.
    - In that case, the timer falls back to CPU timing with explicit synchronization.
    - Very fast kernels (sub-millisecond) can then show large relative noise.
 
@@ -349,11 +349,11 @@ How to sanity-check:
 
 ---
 
-### How to interpret the “Key Insights” section
+### How to interpret the â€œKey Insightsâ€ section
 The script prints, for each kernel, the configuration with the smallest `time_ms_mean`.
 
 This is a *quick summary*, not a statistical guarantee.
-- If timing is noisy, the “best” row can change run-to-run.
+- If timing is noisy, the â€œbestâ€ row can change run-to-run.
 
 ---
 
@@ -363,7 +363,7 @@ This is a *quick summary*, not a statistical guarantee.
 3. For each kernel, compare:
    - how `Block` changes runtime
    - how `RegCap` affects the occupancy estimate
-4. Watch for rows with huge `Std` and treat them as “noisy / needs re-run”.
+4. Watch for rows with huge `Std` and treat them as â€œnoisy / needs re-runâ€.
 
 Python snippet to load the results:
 
@@ -379,15 +379,15 @@ print(df.loc[df.groupby("kernel")["time_ms_mean"].idxmin()])
 
 ---
 
-## Phase 1 — Real-kernel hardware counters (Nsight Compute / `ncu`)
+## Phase 1 â€” Real-kernel hardware counters (Nsight Compute / `ncu`)
 
 ### Goal (what Phase 1 is trying to measure)
 Phase 1 answers a different question than Phase 0.
 
-- **Phase 0**: “How fast did the kernel run?” and “What occupancy do we *predict* from registers/block size?”
-- **Phase 1**: “What did the GPU *actually do* while running the kernel?” using **hardware performance counters**.
+- **Phase 0**: â€œHow fast did the kernel run?â€ and â€œWhat occupancy do we *predict* from registers/block size?â€
+- **Phase 1**: â€œWhat did the GPU *actually do* while running the kernel?â€ using **hardware performance counters**.
 
-Phase 1 collects a small set of metrics per run for the project’s real kernels:
+Phase 1 collects a small set of metrics per run for the projectâ€™s real kernels:
 - `gemm`
 - `reduction`
 - `softmax`
@@ -395,8 +395,8 @@ Phase 1 collects a small set of metrics per run for the project’s real kernels
 It writes results to:
 - `results/tables/phase1_result.csv`
 
-### Beginner concept: what are “hardware counters”?
-Modern CPUs/GPUs include tiny “meters” inside the chip that count events while code is running.
+### Beginner concept: what are â€œhardware countersâ€?
+Modern CPUs/GPUs include tiny â€œmetersâ€ inside the chip that count events while code is running.
 
 Examples:
 - how busy the compute cores were
@@ -418,10 +418,10 @@ python experiments\phase1_collect_counters.py
 ```
 
 Recommended on Windows:
-- Open **Command Prompt** → **Run as administrator** (so counters are available)
+- Open **Command Prompt** â†’ **Run as administrator** (so counters are available)
 
 Expected terminal output (shape):
-- It prints one line per configuration (kernel × size × block × reg cap)
+- It prints one line per configuration (kernel Ã— size Ã— block Ã— reg cap)
 - It ends with:
    - `Done. Rows: ... (ok=...)`
    - `Saved to: results\tables\phase1_result.csv`
@@ -437,7 +437,7 @@ Per-row identifiers
    - `reduction`: reduces $N \times N$ elements (internally uses `matrix_size * matrix_size`).
 - `block_size` (int): threads per block used by the kernel runner.
 - `reg_cap` (string/int): register cap setting.
-   - `default` means “no cap requested”.
+   - `default` means â€œno cap requestedâ€.
    - `32`, `64`, ... are caps (Numba `max_registers`, like PTXAS `--maxrregcount`).
 
 Run status / diagnostics
@@ -453,21 +453,21 @@ For each metric key (example: `dram_bw_pct`) Phase 1 writes two columns:
 - `{metric}_norm`: a simplified value intended for ML/RL state vectors.
 
 Normalization rules used in this repo:
-- Most metrics are percentages → `norm = raw / 100`, clamped to $[0, 1]$.
-- Keys ending in `_ratio` are treated as “ratio-like” and are **clamped** to $[0, 1]$ (best-effort).
+- Most metrics are percentages â†’ `norm = raw / 100`, clamped to $[0, 1]$.
+- Keys ending in `_ratio` are treated as â€œratio-likeâ€ and are **clamped** to $[0, 1]$ (best-effort).
    - This keeps the RL state bounded, but it also means `_ratio_norm` is not always a linear rescaling of `_ratio_raw`.
 
 ### Metrics collected in `phase1_result.csv` (what they mean)
 
 #### `achieved_occupancy_raw` / `_norm`
-- What it measures: a proxy for “how many warps were active” during execution.
-- Typical unit: percent-of-peak (0–100).
+- What it measures: a proxy for â€œhow many warps were activeâ€ during execution.
+- Typical unit: percent-of-peak (0â€“100).
 - Interpretation:
    - Higher is usually better for *latency hiding* (especially memory-bound kernels).
    - But higher occupancy is not automatically faster (compute-heavy kernels can be fastest at slightly lower occupancy).
 
 #### `dram_bw_pct_raw` / `_norm`
-- What it measures: DRAM throughput as a **percentage of the GPU’s peak DRAM bandwidth**.
+- What it measures: DRAM throughput as a **percentage of the GPUâ€™s peak DRAM bandwidth**.
 - Interpretation:
    - High values suggest your kernel is pushing memory bandwidth.
    - Low values can mean the kernel is compute-bound, underutilized, or too small to saturate the GPU.
@@ -479,7 +479,7 @@ Normalization rules used in this repo:
    - A low hit-rate is common for streaming workloads or very large working sets.
 
 #### `sm_active_pct_raw` / `_norm`
-- What it measures: an SM utilization proxy (“how busy the GPU compute units were”).
+- What it measures: an SM utilization proxy (â€œhow busy the GPU compute units wereâ€).
 - Why it might vary across machines/tool versions:
    - Nsight Compute sometimes reports SM utilization via different but related metrics.
    - The collector requests `sm__active_cycles...` and falls back to `sm__throughput...` if needed.
@@ -490,24 +490,24 @@ Normalization rules used in this repo:
 - What it measures: a warp efficiency proxy derived from executed thread instructions.
 - Interpretation:
    - If your kernel has branch divergence or inactive lanes, this can drop.
-   - On some setups this metric’s “raw” scale can look like “active lanes per instruction” (often near 32 when fully efficient).
+   - On some setups this metricâ€™s â€œrawâ€ scale can look like â€œactive lanes per instructionâ€ (often near 32 when fully efficient).
 - In this repo:
    - `_norm` is clamped to $[0, 1]$ for safety.
    - Treat this as an optional/debug signal rather than a primary metric.
 
 ### Common gotchas (especially for beginners)
 
-1) “Why is Phase 1 slower than Phase 0?”
+1) â€œWhy is Phase 1 slower than Phase 0?â€
 - Phase 1 runs under a profiler (`ncu`). Profilers add overhead.
 
-2) “Why do I need Administrator on Windows?”
-- Windows’ driver model often blocks access to hardware counters unless you run elevated.
+2) â€œWhy do I need Administrator on Windows?â€
+- Windowsâ€™ driver model often blocks access to hardware counters unless you run elevated.
 
-3) “Why do some metric columns come out empty?”
+3) â€œWhy do some metric columns come out empty?â€
 - A metric may not be supported (or may be emitted as N/A) on a given GPU / Nsight Compute version.
 - The collector includes fallbacks for some key signals (like `sm_active_pct`), but not for every possible metric.
 
-4) “Raw vs norm: which should I use?”
+4) â€œRaw vs norm: which should I use?â€
 - For human reading/plots: use `_raw`.
 - For RL/ML inputs: use `_norm` (bounded, roughly comparable across metrics).
 
@@ -526,7 +526,7 @@ print(best[["kernel", "matrix_size", "block_size", "reg_cap", "achieved_occupanc
 
 ---
 
-## Phase 2 — Benchmark kernels (the workloads we optimize)
+## Phase 2 â€” Benchmark kernels (the workloads we optimize)
 
 ### Goal (what Phase 2 is trying to achieve)
 Phase 2 is about having a **small set of real CUDA kernels** that:
@@ -535,14 +535,14 @@ Phase 2 is about having a **small set of real CUDA kernels** that:
 - are stable to run repeatedly
 - can be compiled/run under different settings (block size, register cap)
 
-These kernels are the “tasks” the RL agent will later learn to optimize.
+These kernels are the â€œtasksâ€ the RL agent will later learn to optimize.
 
 Implemented kernels in this repo:
 - **GEMM** (`kernels/gemm.py`): tiled matrix multiplication (typically compute-heavy)
 - **Reduction** (`kernels/reduction.py`): sum reduction (typically memory/latency sensitive)
 - **Softmax** (`kernels/softmax.py`): row-wise softmax (mixed compute + memory)
 
-### Beginner concept: what does “kernel correctness” mean?
+### Beginner concept: what does â€œkernel correctnessâ€ mean?
 Before optimizing performance, we must ensure the kernel computes the right answer.
 
 Examples:
@@ -552,7 +552,7 @@ Examples:
 
 Floating point note:
 - GPU results may not match CPU results *bit-for-bit* due to different instruction order and math implementations.
-- We use **tolerances** (“close enough”) rather than exact equality.
+- We use **tolerances** (â€œclose enoughâ€) rather than exact equality.
 
 ### How to validate Phase 2 (recommended before Phase 3/RL)
 
@@ -619,18 +619,18 @@ Interpretation:
    - This is fine for correctness tests.
 
 If Phase 2 tests fail:
-- Fix correctness first (don’t start RL yet).
+- Fix correctness first (donâ€™t start RL yet).
 - Then rerun Phase 0/1 experiments, because they assume these kernels are valid.
 
 ---
 
 ## Future phases (Phase 3+)
-### Phase 3 — RL Environment (Gym interface)
+### Phase 3 â€” RL Environment (Gym interface)
 
-Phase 3’s job is to take the kernels (Phase 2), timing (Phase 0), and optional counters (Phase 1) and wrap them in a **Gymnasium environment**.
+Phase 3â€™s job is to take the kernels (Phase 2), timing (Phase 0), and optional counters (Phase 1) and wrap them in a **Gymnasium environment**.
 
 Objectives:
-- **Action → knob mapping**: each action corresponds to a concrete configuration (initially `block_size` and `reg_cap`).
+- **Action â†’ knob mapping**: each action corresponds to a concrete configuration (initially `block_size` and `reg_cap`).
 - **Reward = speedup**: reward is based on measured speedup relative to a baseline configuration that is measured once per episode.
 - **Observation is bounded and ML-friendly**: observation vectors are numeric and normalized/clamped to $[0,1]$.
 - **Graceful degradation on Windows**: if CUPTI/`ncu` metrics are unavailable (e.g., `ERR_NVGPUCTRPERM`), the environment still runs using fallback vectors instead of failing.
@@ -644,7 +644,7 @@ Non-objectives (initial Phase 3 prototype):
 
 ### What Phase 3 produces (artifacts)
 
-Phase 3 is an RL environment, so the most useful “results” are **rollout logs**.
+Phase 3 is an RL environment, so the most useful â€œresultsâ€ are **rollout logs**.
 
 Phase 3 produces two CSV artifacts in `results/tables/`:
 - `phase3_rollout.csv` (step-level): one row per environment step (one attempted configuration).
@@ -715,9 +715,9 @@ Each row corresponds to **one environment step** (one attempt at a kernel config
 ### Action (the configuration attempted)
 - `block_size` (int): the chosen block-size knob.
    - For `reduction`/`softmax`, this is the 1D threads-per-block.
-   - For `gemm`, this selects between kernel variants (e.g., 8×8 vs 16×16 tiles), so it acts as a discrete knob rather than a literal “threads-per-block” value.
+   - For `gemm`, this selects between kernel variants (e.g., 8Ã—8 vs 16Ã—16 tiles), so it acts as a discrete knob rather than a literal â€œthreads-per-blockâ€ value.
 - `reg_cap` (int): requested register cap.
-   - `0` means “default” (no requested cap).
+   - `0` means â€œdefaultâ€ (no requested cap).
    - Other values request Numba `max_registers=...` (PTXAS `--maxrregcount` equivalent).
 
 ### Timing + reward
@@ -757,10 +757,10 @@ If `cupti_ok=False`, these columns are 0.
 ### NVML telemetry columns (normalized)
 
 If NVML is enabled, these columns reflect lightweight device telemetry sampled around each step:
-- `nvml_gpu_util_norm`: GPU utilization fraction (0–1).
-- `nvml_mem_util_norm`: memory interface utilization fraction (0–1).
-- `nvml_mem_used_frac`: VRAM used fraction (0–1).
-- `nvml_temp_norm`: temperature normalized by 100 (roughly 0–1).
+- `nvml_gpu_util_norm`: GPU utilization fraction (0â€“1).
+- `nvml_mem_util_norm`: memory interface utilization fraction (0â€“1).
+- `nvml_mem_used_frac`: VRAM used fraction (0â€“1).
+- `nvml_temp_norm`: temperature normalized by 100 (roughly 0â€“1).
 
 Important note on Windows sampling:
 - If you run with `--use-cupti`, NVML utilization is collected as a **peak** while the `ncu` subprocess is running (this is more reliable for short kernels).
@@ -787,7 +787,7 @@ Each row summarizes one episode.
 
 ### How to interpret Phase 3 results quickly
 
-If you want “best configuration found” per kernel/size, use `phase3_rollout.csv`:
+If you want â€œbest configuration foundâ€ per kernel/size, use `phase3_rollout.csv`:
 - filter by `kernel` and `matrix_size`
 - sort by `speedup` descending
 
@@ -797,7 +797,7 @@ Important practical note:
 
 ---
 
-## Phase 3 Training — PPO with Stable-Baselines3
+## Phase 3 Training â€” PPO with Stable-Baselines3
 
 After validating the environment with `phase3_rollout_log.py`, you can train a PPO agent to learn an optimization policy.
 
@@ -841,18 +841,18 @@ Each observation is a vector of normalized values $[0, 1]$:
 
 **CUPTI metrics** (if `--use-cupti` is enabled, optional):
 - Four metrics collected from Nsight Compute (`ncu`), each normalized to $[0,1]$:
-  - `achieved_occupancy_norm`: how many warps were active (0–1)
-  - `l2_hit_rate_norm`: cache efficiency (0–1)
-  - `dram_bw_pct_norm`: DRAM bandwidth usage as fraction of peak (0–1)
-  - `sm_active_pct_norm`: compute unit utilization (0–1)
+  - `achieved_occupancy_norm`: how many warps were active (0â€“1)
+  - `l2_hit_rate_norm`: cache efficiency (0â€“1)
+  - `dram_bw_pct_norm`: DRAM bandwidth usage as fraction of peak (0â€“1)
+  - `sm_active_pct_norm`: compute unit utilization (0â€“1)
 - If CUPTI is disabled or fails, these four values are zero.
 
 **NVML telemetry** (lightweight, always enabled by default):
 - Four lightweight GPU metrics:
-  - `gpu_util_norm`: how busy the GPU is (0–1)
-  - `mem_util_norm`: how busy the memory system is (0–1)
-  - `mem_used_frac`: how much VRAM is in use (0–1)
-  - `temp_norm`: temperature normalized by 100 (0–1)
+  - `gpu_util_norm`: how busy the GPU is (0â€“1)
+  - `mem_util_norm`: how busy the memory system is (0â€“1)
+  - `mem_used_frac`: how much VRAM is in use (0â€“1)
+  - `temp_norm`: temperature normalized by 100 (0â€“1)
 
 **Total observation dimension**:
 - The observation always includes the 4 CUPTI slots in a fixed position.
@@ -860,7 +860,7 @@ Each observation is a vector of normalized values $[0, 1]$:
 - With NVML enabled (the default), the total is: `4` (CUPTI) + `4` (NVML) + `3` (kernel one-hot) + `2` (previous action) = **13 dimensions**.
 - If NVML is disabled, the total is: `4` (CUPTI) + `3` (kernel one-hot) + `2` (previous action) = **9 dimensions**.
 
-**Implementation note (ordering):** the environment concatenates features as `CUPTI (4) → NVML (4) → kernel one-hot (3) → previous action (2)`.
+**Implementation note (ordering):** the environment concatenates features as `CUPTI (4) â†’ NVML (4) â†’ kernel one-hot (3) â†’ previous action (2)`.
 
 #### Action and action decoding
 
@@ -878,9 +878,9 @@ In the current implementation:
 An action is a **pair of indices**: `action = [block_idx, reg_idx]`.
 
 Example decoding:
-- `action=[0, 0]` → `(block_size=64, reg_cap=0)`
-- `action=[1, 1]` → `(block_size=128, reg_cap=32)`
-- `action=[2, 2]` → `(block_size=256, reg_cap=64)`
+- `action=[0, 0]` â†’ `(block_size=64, reg_cap=0)`
+- `action=[1, 1]` â†’ `(block_size=128, reg_cap=32)`
+- `action=[2, 2]` â†’ `(block_size=256, reg_cap=64)`
 
 #### Reward
 
@@ -908,7 +908,7 @@ One episode consists of:
 2. **Steps**: the agent chooses actions for `--max-episode-len` steps
 3. **Termination**: the episode ends (truncated) after `--max-episode-len` steps
 
-Each episode typically produces 10–50 (block_size, reg_cap) trials, and the agent learns which configurations tend to be fast.
+Each episode typically produces 10â€“50 (block_size, reg_cap) trials, and the agent learns which configurations tend to be fast.
 
 ### NVML-only vs CUPTI+NVML: which should I use?
 
@@ -930,7 +930,7 @@ cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stac
   - Observation dimension stays **13** (with NVML enabled).
 - **What the agent learns**: Patterns from light telemetry (GPU util, memory util, temperature).
   - This is less informative than CUPTI, but fast and sufficient for basic optimization.
-  - Example: "Reduction gets hot → try lower block size."
+  - Example: "Reduction gets hot â†’ try lower block size."
 
 **When to use:**
 - First-time training (to validate the setup works).
@@ -949,14 +949,14 @@ cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stac
 ```
 
 **Characteristics:**
-- **Speed**: ~2–8 hours for 50k steps (much slower).
+- **Speed**: ~2â€“8 hours for 50k steps (much slower).
   - Each step runs the kernel under `ncu` profiler, which adds significant overhead.
   - Note: `--max-episode-len 30` (not 50) to keep total time reasonable.
 - **Privileges**: **Requires** Administrator Command Prompt (GPU counter access).
 - **Observation**: CUPTI counters (achieved occupancy, L2 hit rate, DRAM BW, SM utilization) + NVML + kernel identity + previous action.
   - Observation dimension: 13 (full).
 - **What the agent learns**: Rich hardware metrics.
-  - Example patterns: "Achieved occupancy > 0.6 AND DRAM BW < 0.8 → this config is register-constrained, try lower reg cap."
+  - Example patterns: "Achieved occupancy > 0.6 AND DRAM BW < 0.8 â†’ this config is register-constrained, try lower reg cap."
   - More detailed signals can lead to **better optimization**, but the agent needs more data to learn robust patterns.
 
 **When to use:**
@@ -972,20 +972,20 @@ cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stac
 
 | Aspect | NVML-only | CUPTI+NVML |
 |--------|----------|-----------|
-| **Training time (50k steps)** | ~5–20 min | ~2–8 hours |
+| **Training time (50k steps)** | ~5â€“20 min | ~2â€“8 hours |
 | **Requires Administrator** | No | Yes |
 | **Privileges needed** | None | GPU counters |
 | **Observation dim** | 9 | 13 |
 | **Metrics** | GPU util, mem util, temp | + occupancy, cache, DRAM BW, SM util |
 | **Policy quality** | Good (basic heuristics) | Better (rich signals) |
-| **Iterative development** | ✓ (fast feedback) | ✗ (slow; use once) |
+| **Iterative development** | âœ“ (fast feedback) | âœ— (slow; use once) |
 | **Paper/publication** | Acceptable | Preferred |
 
 ---
 
 ### How to run PPO training (fast mode, NVML only)
 
-On Windows CMD (estimated 5–20 minutes for 50k steps):
+On Windows CMD (estimated 5â€“20 minutes for 50k steps):
 
 ```bash
 cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stack" && conda activate gpu-jit-opt && python train_rl.py --total-steps 50000 --max-episode-len 50 --eval-freq 5000 --n-eval-episodes 5 --use-nvml
@@ -1043,14 +1043,14 @@ Watch for:
 After training completes:
 
 **Model files**:
-- `results/models/<run_tag>.zip` — final trained policy (loadable with `PPO.load()`)
-- `results/models/<run_tag>_*_steps.zip` — periodic checkpoints (~10 over training)
-- `results/models/<run_tag>_best/best_model.zip` (if evaluation is enabled) — best model found during evaluation
+- `results/models/<run_tag>.zip` â€” final trained policy (loadable with `PPO.load()`)
+- `results/models/<run_tag>_*_steps.zip` â€” periodic checkpoints (~10 over training)
+- `results/models/<run_tag>_best/best_model.zip` (if evaluation is enabled) â€” best model found during evaluation
   - On some runs this may be renamed to `best_model_<gpu_tag>.zip`.
 
 **Logs and summaries**:
-- `results/logs/<run_tag>/train_rl_<gpu_tag>.log` — detailed training log (timestamps, warnings)
-- `results/logs/<run_tag>/training_summary_<gpu_tag>.json` — JSON summary with hyperparameters + artifact paths:
+- `results/logs/<run_tag>/train_rl_<gpu_tag>.log` â€” detailed training log (timestamps, warnings)
+- `results/logs/<run_tag>/training_summary_<gpu_tag>.json` â€” JSON summary with hyperparameters + artifact paths:
   ```json
   {
     "total_steps": 50000,
@@ -1063,7 +1063,7 @@ After training completes:
   ```
 
 **TensorBoard visualization**:
-- `results/logs/tensorboard/` — live plots (reward, episode length, policy loss, value loss)
+- `results/logs/tensorboard/` â€” live plots (reward, episode length, policy loss, value loss)
 - View them in real-time or after training by running:
   ```bash
   tensorboard --logdir results/logs/tensorboard
@@ -1081,7 +1081,7 @@ These are the tunable knobs when running `python train_rl.py`. You only need to 
 - `--total-steps NUM` (default: 100000)
   - Total number of environment interactions (steps) during training.
   - Larger = longer training, potentially better convergence, but slower.
-  - Typical range: 10k–100k for this task. Start with 50k.
+  - Typical range: 10kâ€“100k for this task. Start with 50k.
 
 - `--batch-size NUM` (default: 2048)
   - Number of steps collected per gradient update ("rollout").
@@ -1103,7 +1103,7 @@ These are the tunable knobs when running `python train_rl.py`. You only need to 
   - Discount factor: how much the agent values future rewards vs immediate rewards.
   - 0.99 = heavily discount the future (short-term thinking).
   - 0.99+ = slightly more long-term planning.
-  - Keep at 0.99 for this task (episodes are only ~30–50 steps).
+  - Keep at 0.99 for this task (episodes are only ~30â€“50 steps).
 
 - `--gae-lambda LAMBDA` (default: 0.95)
   - Generalized Advantage Estimation parameter (controls how far into future advantages are estimated).
@@ -1126,7 +1126,7 @@ These are the tunable knobs when running `python train_rl.py`. You only need to 
 - `--max-episode-len NUM` (default: 50)
   - Maximum steps per episode.
   - With NVML-only: use 50 (fast, can afford more exploration).
-  - With CUPTI: use 20–30 (slow, reduce per-episode profiling overhead).
+  - With CUPTI: use 20â€“30 (slow, reduce per-episode profiling overhead).
 
 - `--warmup NUM` (default: 1)
   - Kernel warmup runs before timing.
@@ -1141,17 +1141,17 @@ These are the tunable knobs when running `python train_rl.py`. You only need to 
 - `--eval-freq FREQ` (default: None, i.e., no evaluation)
   - Run evaluation every `FREQ` environment steps.
   - If set (e.g., `5000`), the agent is evaluated on separate episodes and the "best" model is saved.
-  - Recommended: set to 10–20% of total steps (e.g., for 50k steps, use 5000).
+  - Recommended: set to 10â€“20% of total steps (e.g., for 50k steps, use 5000).
 
 - `--n-eval-episodes N` (default: None)
   - Number of evaluation episodes per evaluation.
-  - Recommended: 3–5.
+  - Recommended: 3â€“5.
 
 **CUPTI parameters:**
 
 - `--use-cupti` (flag: off by default)
   - Enable CUPTI/`ncu` metric collection.
-  - Requires Administrator on Windows; adds major overhead (2–8x slower).
+  - Requires Administrator on Windows; adds major overhead (2â€“8x slower).
 
 - `--use-nvml` (flag: on by default)
   - Enable NVML lightweight telemetry.
@@ -1159,7 +1159,7 @@ These are the tunable knobs when running `python train_rl.py`. You only need to 
 
 - `--cupti-timeout-s NUM` (default: 120)
   - Timeout for `ncu` collection per step, in seconds.
-  - If CUPTI is slow on your machine, increase to 180–300.
+  - If CUPTI is slow on your machine, increase to 180â€“300.
 
 ---
 
@@ -1167,11 +1167,11 @@ These are the tunable knobs when running `python train_rl.py`. You only need to 
 
 **"Should I use NVML-only or CUPTI+NVML?"**
 
-1. **First time / new setup?** → NVML-only (quick feedback)
-2. **Want to iterate quickly?** → NVML-only (5–20 min per run)
-3. **Have time and want best results?** → CUPTI+NVML (2–8 hours per run)
-4. **Writing a paper / final results?** → CUPTI+NVML (richer metrics)
-5. **Admin not available?** → NVML-only (requires no privileges)
+1. **First time / new setup?** â†’ NVML-only (quick feedback)
+2. **Want to iterate quickly?** â†’ NVML-only (5â€“20 min per run)
+3. **Have time and want best results?** â†’ CUPTI+NVML (2â€“8 hours per run)
+4. **Writing a paper / final results?** â†’ CUPTI+NVML (richer metrics)
+5. **Admin not available?** â†’ NVML-only (requires no privileges)
 
 For this project, a recommended workflow:
 1. Run NVML-only (50k steps, ~15 min) to validate training works.
@@ -1180,7 +1180,7 @@ For this project, a recommended workflow:
 
 ---
 
-## Understanding Training Results — TensorBoard Metrics
+## Understanding Training Results â€” TensorBoard Metrics
 
 After training completes, you can visualize results with TensorBoard to understand how well your agent learned.
 
@@ -1208,11 +1208,11 @@ Then open `http://localhost:6006` in your browser. You'll see training curves or
 - Plateaus: agent has converged to a stable policy
 
 **How to interpret values (important):** this project uses `reward = speedup - 1`, so:
-- `reward = 0.0` → `speedup = 1.0x` (same as baseline)
-- `reward = 0.2` → `speedup = 1.2x` (20% faster)
-- `reward = -0.1` → `speedup = 0.9x` (10% slower)
+- `reward = 0.0` â†’ `speedup = 1.0x` (same as baseline)
+- `reward = 0.2` â†’ `speedup = 1.2x` (20% faster)
+- `reward = -0.1` â†’ `speedup = 0.9x` (10% slower)
 
-There is no single “correct” target value: it depends on kernel choice, matrix sizes, measurement noise, and how much headroom exists vs the baseline configuration.
+There is no single â€œcorrectâ€ target value: it depends on kernel choice, matrix sizes, measurement noise, and how much headroom exists vs the baseline configuration.
 
 **Good sign:** Smooth upward curve that eventually plateaus
 **Bad sign:** Flat line (no learning) or wild oscillations (unstable training)
@@ -1352,10 +1352,10 @@ Reward
 - Should plateau (not keep climbing forever)
 
 **If you see:**
-- ✓ Smooth curve climbing to 3+ → Excellent training
-- ✗ Flat line → Learning rate too low or reward broken
-- ✗ Spiky/oscillating → Learning rate too high or clip_range wrong
-- ✗ Declining → Policy getting worse (very bad)
+- âœ“ Smooth curve climbing to 3+ â†’ Excellent training
+- âœ— Flat line â†’ Learning rate too low or reward broken
+- âœ— Spiky/oscillating â†’ Learning rate too high or clip_range wrong
+- âœ— Declining â†’ Policy getting worse (very bad)
 
 ---
 
@@ -1379,9 +1379,9 @@ Loss
 - Policy loss should drop from high values to near 0
 
 **If you see:**
-- ✓ Both decreasing consistently → Good learning
-- ✗ Flat or increasing → Not learning (check learning rate)
-- ✗ Sudden jumps → Unstable training (high variance batches)
+- âœ“ Both decreasing consistently â†’ Good learning
+- âœ— Flat or increasing â†’ Not learning (check learning rate)
+- âœ— Sudden jumps â†’ Unstable training (high variance batches)
 
 ---
 
@@ -1402,9 +1402,9 @@ Clip %
 - Not trending up or down
 
 **If you see:**
-- ✓ Stable at 0.1-0.3 → PPO working correctly
-- ✗ Near 0 → Learning rate too low
-- ✗ > 0.5 → Learning rate too high
+- âœ“ Stable at 0.1-0.3 â†’ PPO working correctly
+- âœ— Near 0 â†’ Learning rate too low
+- âœ— > 0.5 â†’ Learning rate too high
 
 ---
 
@@ -1597,7 +1597,7 @@ while True:
 
 ---
 
-## Phase 5 — BiLSTM Phase Detector
+## Phase 5 â€” BiLSTM Phase Detector
 
 Phase 5 trains a Bidirectional LSTM neural network that classifies GPU kernel execution into one of four phases based on hardware performance counter traces.
 
@@ -1611,7 +1611,7 @@ The four phases are based on the **roofline model**:
 
 | Phase | Label | Characteristics | Example |
 |-------|-------|----------------|---------|
-| 0 | **Compute-bound** | High occupancy, low DRAM BW, high SM utilization | Large GEMM (N≥256) |
+| 0 | **Compute-bound** | High occupancy, low DRAM BW, high SM utilization | Large GEMM (Nâ‰¥256) |
 | 1 | **Memory-bound** | Moderate occupancy, high DRAM BW, moderate SM util | Reduction, Softmax |
 | 2 | **Latency-bound** | Low occupancy, low DRAM BW, low SM utilization | Tiny kernels (N<128) |
 | 3 | **Mixed** | Overlapping characteristics, transitional | Phase transitions |
@@ -1627,16 +1627,16 @@ $$
 For the RTX 3050 Ti:
 - Peak compute: ~7.8 TFLOP/s (FP32)
 - Peak memory bandwidth: ~192 GB/s
-- **Ridge point** = 7.8 × 10¹² / 192 × 10⁹ ≈ **40.6 FLOP/byte**
+- **Ridge point** = 7.8 Ã— 10Â¹Â² / 192 Ã— 10â¹ â‰ˆ **40.6 FLOP/byte**
 
-If a kernel's AI > 40.6 → it is **compute-bound** (limited by ALU throughput).
-If a kernel's AI < 40.6 → it is **memory-bound** (limited by DRAM bandwidth).
-If both utilization metrics are low → it is **latency-bound** (launch overhead dominates).
+If a kernel's AI > 40.6 â†’ it is **compute-bound** (limited by ALU throughput).
+If a kernel's AI < 40.6 â†’ it is **memory-bound** (limited by DRAM bandwidth).
+If both utilization metrics are low â†’ it is **latency-bound** (launch overhead dominates).
 
 Examples for the project's kernels:
-- **GEMM** at N=512: AI = 512/6 ≈ 85.3 → compute-bound ✓
-- **Reduction** at any size: AI ≈ 0.25 → memory-bound ✓
-- **Softmax** at any size: AI ≈ 0.625 → memory-bound ✓
+- **GEMM** at N=512: AI = 512/6 â‰ˆ 85.3 â†’ compute-bound âœ“
+- **Reduction** at any size: AI â‰ˆ 0.25 â†’ memory-bound âœ“
+- **Softmax** at any size: AI â‰ˆ 0.625 â†’ memory-bound âœ“
 
 ### BiLSTM architecture
 
@@ -1644,17 +1644,17 @@ The model processes a **sliding window** of T=20 timesteps of 5 CUPTI counter va
 
 ```
 Input: (batch, T=20, 5)
-  ↓
+  â†“
 BiLSTM (2 layers, hidden=64, bidirectional)
-  ↓
-Concatenate forward[-1] + backward[0]  →  (batch, 128)
-  ↓
-┌─────────────────────┐  ┌──────────────────┐
-│ Phase Head          │  │ Uncertainty Head  │
-│ Linear(128→32)→ReLU │  │ Linear(128→16)   │
-│ Linear(32→4)        │  │ →ReLU→Linear(1)  │
-│ → Softmax           │  │ → Sigmoid         │
-└─────────────────────┘  └──────────────────┘
+  â†“
+Concatenate forward[-1] + backward[0]  â†’  (batch, 128)
+  â†“
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚ Phase Head          â”‚  â”‚ Uncertainty Head  â”‚
+â”‚ Linear(128â†’32)â†’ReLU â”‚  â”‚ Linear(128â†’16)   â”‚
+â”‚ Linear(32â†’4)        â”‚  â”‚ â†’ReLUâ†’Linear(1)  â”‚
+â”‚ â†’ Softmax           â”‚  â”‚ â†’ Sigmoid         â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
       (batch, 4)              (batch, 1)
    phase probabilities       uncertainty
 ```
@@ -1662,11 +1662,11 @@ Concatenate forward[-1] + backward[0]  →  (batch, 128)
 **Total parameters:** 142,021
 
 The 5 input dimensions correspond to CUPTI counters:
-1. `achieved_occupancy` — fraction of max warps active
-2. `l2_hit_rate` — L2 cache efficiency
-3. `dram_bw_pct` — DRAM bandwidth usage as fraction of peak
-4. `warp_exec_eff` — warp execution efficiency
-5. `sm_active_pct` — streaming multiprocessor utilization
+1. `achieved_occupancy` â€” fraction of max warps active
+2. `l2_hit_rate` â€” L2 cache efficiency
+3. `dram_bw_pct` â€” DRAM bandwidth usage as fraction of peak
+4. `warp_exec_eff` â€” warp execution efficiency
+5. `sm_active_pct` â€” streaming multiprocessor utilization
 
 ### How to run Phase 5 training
 
@@ -1675,10 +1675,10 @@ cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stac
 ```
 
 Optional arguments:
-- `--epochs 100` — more training epochs (default: 50)
-- `--lr 0.001` — learning rate (default: 1e-3)
-- `--n-train 3200` — more training samples (default: 1600)
-- `--seed 42` — random seed (default: 42)
+- `--epochs 100` â€” more training epochs (default: 50)
+- `--lr 0.001` â€” learning rate (default: 1e-3)
+- `--n-train 3200` â€” more training samples (default: 1600)
+- `--seed 42` â€” random seed (default: 42)
 
 ### Expected output
 
@@ -1706,12 +1706,12 @@ Training for 50 epochs...
 Best validation accuracy: 100.0%
 ```
 
-**Note:** 100% accuracy is expected on synthetic data because the phase distributions are well-separated by design. Real CUPTI traces would have more overlap between phases, especially between "memory-bound" and "mixed", and accuracy would be lower (expected 85–95%).
+**Note:** 100% accuracy is expected on synthetic data because the phase distributions are well-separated by design. Real CUPTI traces would have more overlap between phases, especially between "memory-bound" and "mixed", and accuracy would be lower (expected 85â€“95%).
 
 ### Training artifacts
 
-- `results/models/phase_detector.pt` — trained PyTorch model weights
-- `results/tables/phase5_eval.csv` — per-class precision/recall/F1 metrics
+- `results/models/phase_detector.pt` â€” trained PyTorch model weights
+- `results/tables/phase5_eval.csv` â€” per-class precision/recall/F1 metrics
 
 ### How to use the trained model
 
@@ -1725,7 +1725,7 @@ model = PhaseDetector()
 model.load_state_dict(torch.load("results/models/phase_detector.pt"))
 
 # Single-window inference
-# Input: 20 timesteps × 5 CUPTI counters (normalized to [0,1])
+# Input: 20 timesteps Ã— 5 CUPTI counters (normalized to [0,1])
 counter_window = np.random.rand(20, 5).astype(np.float32)
 phase_label, confidence, uncertainty = model.predict(counter_window)
 
@@ -1740,18 +1740,18 @@ The evaluation CSV contains per-class metrics:
 
 | Column | Meaning |
 |--------|--------|
-| `phase` | Phase ID (0–3) |
+| `phase` | Phase ID (0â€“3) |
 | `phase_name` | Human-readable name |
-| `precision` | TP / (TP + FP) — how many predicted phases are correct |
-| `recall` | TP / (TP + FN) — how many actual phases are found |
+| `precision` | TP / (TP + FP) â€” how many predicted phases are correct |
+| `recall` | TP / (TP + FN) â€” how many actual phases are found |
 | `f1` | Harmonic mean of precision and recall |
 | `support` | Number of validation samples for this class |
 
 ---
 
-## Phase 7 — RL vs Baselines Comparison
+## Phase 7 â€” RL vs Baselines Comparison
 
-Phase 7 is the **main evaluation experiment** that validates the entire project. It compares the trained PPO agent against two baselines on each kernel × problem size combination.
+Phase 7 is the **main evaluation experiment** that validates the entire project. It compares the trained PPO agent against two baselines on each kernel Ã— problem size combination.
 
 ### Goal (what Phase 7 is trying to prove)
 
@@ -1759,9 +1759,9 @@ Phase 7 answers the central research question: **"Does the RL agent find better 
 
 It runs three strategies head-to-head:
 
-1. **PTXAS default** — the compiler's default configuration (block_size=256, reg_cap=0). This is what you get "out of the box" without any tuning.
-2. **Random search** — sample 100 random (block_size, reg_cap) configurations and keep the best. This is the simplest autotuning baseline.
-3. **Trained PPO agent** — the RL agent trained in Phase 3/4, making deterministic decisions based on its learned policy.
+1. **PTXAS default** â€” the compiler's default configuration (block_size=256, reg_cap=0). This is what you get "out of the box" without any tuning.
+2. **Random search** â€” sample 100 random (block_size, reg_cap) configurations and keep the best. This is the simplest autotuning baseline.
+3. **Trained PPO agent** â€” the RL agent trained in Phase 3/4, making deterministic decisions based on its learned policy.
 
 ### How to run Phase 7
 
@@ -1770,13 +1770,13 @@ cd /d "C:\Users\HP\Desktop\CD PROBLEM STATEMENT\JIT Optimization across GPU stac
 ```
 
 Optional arguments:
-- `--kernels gemm reduction softmax` — which kernels to test (default: all three)
-- `--sizes 256 512 1024` — which problem sizes (default: 256 512)
-- `--n-random 200` — more random search samples (default: 100)
-- `--n-ppo-episodes 10` — more PPO evaluation episodes (default: 5)
-- `--ppo-max-steps 50` — more steps per PPO episode (default: 30)
+- `--kernels gemm reduction softmax` â€” which kernels to test (default: all three)
+- `--sizes 256 512 1024` â€” which problem sizes (default: 256 512)
+- `--n-random 200` â€” more random search samples (default: 100)
+- `--n-ppo-episodes 10` â€” more PPO evaluation episodes (default: 5)
+- `--ppo-max-steps 50` â€” more steps per PPO episode (default: 30)
 
-Estimated runtime: **3–10 minutes** depending on hardware and parameter choices.
+Estimated runtime: **3â€“10 minutes** depending on hardware and parameter choices.
 
 ### Expected output
 
@@ -1784,13 +1784,13 @@ The script produces a Rich-formatted table:
 
 ```
                        Phase 7: RL vs Baselines Comparison
-┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┓
-┃ Strategy      ┃ Kernel    ┃ Size ┃     Time (ms) ┃      Best Speedup ┃ Samples ┃
-┡━━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━┩
-│ PTXAS default │ softmax   │  512 │ 2.648 ± 0.000 │ 1.000x (baseline) │       1 │
-│ Random search │ softmax   │  512 │ 2.332 ± 0.523 │            1.584x │     100 │
-│ PPO agent     │ softmax   │  512 │ 1.664 ± 0.002 │            1.583x │     150 │
-└───────────────┴───────────┴──────┴───────────────┴───────────────────┴─────────┘
+â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”³â”â”â”â”â”â”â”â”â”â”â”â”³â”â”â”â”â”â”â”³â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”³â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”³â”â”â”â”â”â”â”â”â”â”“
+â”ƒ Strategy      â”ƒ Kernel    â”ƒ Size â”ƒ     Time (ms) â”ƒ      Best Speedup â”ƒ Samples â”ƒ
+â”¡â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â•‡â”â”â”â”â”â”â”â”â”â”â”â•‡â”â”â”â”â”â”â•‡â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â•‡â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â•‡â”â”â”â”â”â”â”â”â”â”©
+â”‚ PTXAS default â”‚ softmax   â”‚  512 â”‚ 2.648 Â± 0.000 â”‚ 1.000x (baseline) â”‚       1 â”‚
+â”‚ Random search â”‚ softmax   â”‚  512 â”‚ 2.332 Â± 0.523 â”‚            1.584x â”‚     100 â”‚
+â”‚ PPO agent     â”‚ softmax   â”‚  512 â”‚ 1.664 Â± 0.002 â”‚            1.583x â”‚     150 â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”´â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”´â”€â”€â”€â”€â”€â”€â”´â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”´â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”´â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 ```
 
 ### Understanding the results table
@@ -1800,7 +1800,7 @@ The script produces a Rich-formatted table:
 | `Strategy` | Which optimization strategy was used |
 | `Kernel` | Which GPU kernel (gemm, reduction, softmax) |
 | `Size` | Matrix dimension N (NxN for gemm/softmax, N*N elements for reduction) |
-| `Time (ms)` | Mean ± std of measured kernel time. For Random/PPO, this is the *best* time found |
+| `Time (ms)` | Mean Â± std of measured kernel time. For Random/PPO, this is the *best* time found |
 | `Best Speedup` | Best kernel time / baseline time. Higher = faster than default |
 | `Samples` | Total kernel evaluations used (budget) |
 
@@ -1809,17 +1809,17 @@ The script produces a Rich-formatted table:
 **1. Does PPO beat the default?**
 
 A speedup > 1.0x means the strategy found a faster configuration than the compiler default. On the RTX 3050 Ti:
-- GEMM is already well-optimized at default settings → small gains (~0–6%)
-- Reduction benefits significantly from smaller block sizes → 17–72% speedup
-- Softmax benefits from tuning → 23–58% speedup
+- GEMM is already well-optimized at default settings â†’ small gains (~0â€“6%)
+- Reduction benefits significantly from smaller block sizes â†’ 17â€“72% speedup
+- Softmax benefits from tuning â†’ 23â€“58% speedup
 
-**2. PPO vs Random Search — which is better?**
+**2. PPO vs Random Search â€” which is better?**
 
 Random search has an advantage: it explores the *entire* configuration space uniformly, so with enough samples (N=100), it will find the global optimum.
 
 PPO has a different advantage: **consistency**. Look at the standard deviation:
-- Random search: `±0.523 ms` (high variance — depends on which configs it samples)
-- PPO agent: `±0.002 ms` (extremely low variance — the learned policy is deterministic)
+- Random search: `Â±0.523 ms` (high variance â€” depends on which configs it samples)
+- PPO agent: `Â±0.002 ms` (extremely low variance â€” the learned policy is deterministic)
 
 This means PPO reliably delivers near-optimal performance every time, while random search quality varies run-to-run.
 
@@ -1846,7 +1846,7 @@ PPO is most valuable when:
 
 ### Artifacts
 
-- `results/tables/phase7_comparison.csv` — full results table
+- `results/tables/phase7_comparison.csv` â€” full results table
   - Columns: `strategy, kernel, size, time_mean_ms, time_std_ms, best_speedup, n_samples`
 
 ### Common issues
@@ -1859,22 +1859,48 @@ PPO is most valuable when:
 
 #### Issue: PPO worse than random search
 
-**This is expected** in some cases. With only 3 block sizes × 3 reg caps = 9 configurations, random search with N=100 samples explores each configuration ~11 times on average. For such a small search space, random search is competitive.
+**This is expected** in some cases. With only 3 block sizes Ã— 3 reg caps = 9 configurations, random search with N=100 samples explores each configuration ~11 times on average. For such a small search space, random search is competitive.
 
 PPO's advantage grows with:
-- Larger action spaces (more configuration knobs)
+- Larger action spaces (more configuration knobs) â€” expanding from 9 to ~1,760 configs is the top priority
 - More complex kernels (where performance landscapes are non-trivial)
 - Deployment scenarios (consistent results without re-searching)
+- Cross-kernel generalization (same policy works across kernels without re-tuning, unlike BO which must re-optimize per kernel)
 
 ---
 
-## What’s Next (Immediate Proposed Aims)
+## What's Next (Immediate Proposed Aims)
 
-As of April 2026, the core RL vs Baselines infrastructure (Phases 0–7) is completely functional. The next phase of development focuses on the following six targeted extensions to elevate the framework's scientific claims and evaluation credibility:
+As of April 2026, the core RL vs Baselines infrastructure (Phases 0â€“7) is completely functional. The next phase of development is prioritized by publication impact:
 
-1. **CPU-to-GPU Inlining Measurement:** Directly measuring how Python/Numba JIT inlining structures alter PTX register pressure and final SM occupancy.
-2. **Roofline State Observation:** Adding the Roofline relative position (Arithmetic Intensity / Ridge Point) as a 14th dimension to the RL state to instantly signal compute vs. memory bounds.
-3. **Transformer Workloads:** Adding `LayerNorm` and `Batched GEMM` to the kernel suite to prove the framework handles modern LLM primitives.
-4. **GNN State Integration:** Feeding the 69-dim output of the Phase 6 PyTorch Geometric encoder directly into the RL agent's observation space.
-5. **Energy-Aware Rewards:** Changing the reward function to incorporate NVML power draw, creating a performance-per-watt optimization mode.
-6. **Size Adaptation Sweeps:** Running experiments from N=128 to N=4096 to mathematically prove the RL agent changes its `--maxrregcount` strategy as the problem size scales.
+### Critical for Publication (Q1 Venues)
+
+1. **Action Space Expansion (Priority 1):** Expand from 3Ã—3=9 to ~1,760 configurations (8 block sizes Ã— 11 register caps Ã— 5 shared memory configs Ã— 4 L1 partitions). This is the single most important change â€” with 9 configs, exhaustive search takes ~2 seconds, making RL unjustifiable.
+
+2. **Bayesian Optimization Baseline (Priority 2):** Implement GP-based BO using Optuna or scikit-optimize with the same evaluation budget. No autotuning paper published in a Q1 venue after 2020 compares only against random search.
+
+3. **Statistical Rigor (Priority 5):** Report p-values (Wilcoxon signed-rank test), 95% confidence intervals, coefficient of variation (CV = std/mean), and thermal throttling controls.
+
+### Novel Scientific Contributions
+
+4. **Register Spill Cliff Discovery (Priority 3):** Measure the sharp performance drop when `--maxrregcount` crosses the kernel's actual register requirement. Run fine-grained sweeps (16, 20, 24, ..., 128 registers), plot the cliff, and show the RL agent learns to stay just above it. No published system characterizes or exploits this adaptively.
+
+5. **Occupancy Fallacy Validation (Priority 6):** If the RL agent discovers that a lower-occupancy configuration outperforms a higher one, document this as empirical validation of Volkov's "Better Performance at Lower Occupancy" (GTC 2010).
+
+6. **Break-Even Analysis (Priority 8):** Profiling adds ~30s overhead per kernel. Best speedup saves ~1ms/invocation. Break-even: ~30,500 invocations. Quantifying this provides practitioners a deployment decision framework.
+
+### Advanced Extensions
+
+7. **CPU-to-GPU Inlining Measurement:** Measuring how Numba JIT inlining structures cascade into PTX register pressure and SM occupancy.
+8. **Energy-Aware Rewards:** Using NVML power draw for performance-per-watt optimization.
+9. **CUDA 13.0 Shared Memory Spilling:** Integrating NVIDIA's new shared memory spilling pragma as a third spilling target.
+10. **Transformer Workloads:** Adding `LayerNorm` and `Batched GEMM` to handle modern LLM primitives.
+
+### Target Publication Venues
+
+| Venue | Type | Fit |
+|---|---|---|
+| ACM TACO | Q1 Journal | Best fit - architecture + code optimization, rolling submissions |
+| CGO | Top Conference | CuAsmRL published here, GPU compilation community |
+| CC | Top Conference | Compiler-focused, appreciates practical systems |
+| MLSys | Top Conference | If framing as ML-for-systems |

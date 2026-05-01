@@ -42,3 +42,6 @@ results/
 *.zip
 *.npz
 *.joblib
+
+# User requested exclusions
+MY-RESEARCH.md
